@@ -440,9 +440,11 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
       callType
     );
 
-    // Clear any pending incoming call state
+    // Clear any pending incoming call state - use case-insensitive comparison
     const { incomingCall } = useCallStore.getState();
-    if (incomingCall?.id === callId) {
+    const callIdLower = callId?.toLowerCase();
+    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
+    if (incomingCallIdLower === callIdLower || incomingCall) {
       callSoundService.stopAllSounds();
       NativeCallSound.stopRingtone();
       endNativeCall(callId);
@@ -464,9 +466,11 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
       callType
     );
 
-    // Clear any pending incoming call state
+    // Clear any pending incoming call state - use case-insensitive comparison
     const { incomingCall } = useCallStore.getState();
-    if (incomingCall?.id === callId) {
+    const callIdLower = callId?.toLowerCase();
+    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
+    if (incomingCallIdLower === callIdLower || incomingCall) {
       callSoundService.stopAllSounds();
       NativeCallSound.stopRingtone();
       endNativeCall(callId);
@@ -476,7 +480,8 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
 
   callConnection.on('UserJoinedCall', (callId: string, participant: any) => {
     const { activeCall } = useCallStore.getState();
-    if (activeCall && activeCall.id === callId) {
+    // Use case-insensitive comparison
+    if (activeCall && activeCall.id?.toLowerCase() === callId?.toLowerCase()) {
       useCallStore.getState().setActiveCall({
         ...activeCall,
         participants: [...activeCall.participants, participant],
@@ -486,7 +491,8 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
 
   callConnection.on('UserLeftCall', (callId: string, userId: string) => {
     const { activeCall } = useCallStore.getState();
-    if (activeCall && activeCall.id === callId) {
+    // Use case-insensitive comparison
+    if (activeCall && activeCall.id?.toLowerCase() === callId?.toLowerCase()) {
       useCallStore.getState().setActiveCall({
         ...activeCall,
         participants: activeCall.participants.filter((p) => p.userId !== userId),
@@ -508,11 +514,16 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     // Close native incoming call activity if it's showing
     endNativeCall(callId);
 
-    if (incomingCall?.id === callId) {
+    // Use case-insensitive comparison for GUIDs
+    const callIdLower = callId?.toLowerCase();
+    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
+    const activeCallIdLower = activeCall?.id?.toLowerCase();
+
+    if (incomingCallIdLower === callIdLower) {
       useCallStore.getState().setIncomingCall(null);
     }
 
-    if (activeCall?.id === callId) {
+    if (activeCallIdLower === callIdLower) {
       // For 1-on-1 calls, if the other person declined, end the call for the caller
       if (currentUserId && declinedByUserId !== currentUserId) {
         // The other person declined, so end the call for the caller
@@ -540,13 +551,26 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     // Close native incoming call activity if it's showing
     endNativeCall(callId);
 
-    if (activeCall?.id === callId || incomingCall?.id === callId) {
+    // Use case-insensitive comparison for GUIDs
+    const callIdLower = callId?.toLowerCase();
+    const activeCallIdLower = activeCall?.id?.toLowerCase();
+    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
+
+    if (activeCallIdLower === callIdLower || incomingCallIdLower === callIdLower) {
       console.log('Resetting call state...');
       callSoundService.playEndedTone();
       useCallStore.getState().resetCallState();
       console.log('Call state reset complete');
     } else {
       console.log('Call IDs do not match, not resetting state');
+      console.log('Comparison:', { callIdLower, activeCallIdLower, incomingCallIdLower });
+      // Even if IDs don't match, if we have an incoming call showing, reset state
+      // This handles cases where the call ID format might differ
+      if (incomingCall) {
+        console.log('Incoming call exists but ID mismatch - resetting anyway as safety measure');
+        callSoundService.playEndedTone();
+        useCallStore.getState().resetCallState();
+      }
     }
   });
 

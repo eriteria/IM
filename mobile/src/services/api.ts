@@ -153,6 +153,11 @@ export const conversationsApi = {
     iconUrl?: string;
   }) => api.put(`/conversations/${id}`, data),
 
+  updateGroupPicture: (id: string, formData: FormData) =>
+    api.put(`/conversations/${id}/icon`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+
   addParticipant: (id: string, userId: string) =>
     api.post(`/conversations/${id}/participants`, { userId }),
 
@@ -270,6 +275,20 @@ export const filesApi = {
   upload: (formData: FormData) =>
     api.post('/files/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000, // 120 second timeout for file uploads (documents can be large)
+    }),
+
+  // Upload file with progress callback
+  uploadWithProgress: (formData: FormData, onProgress?: (progress: number) => void) =>
+    api.post('/files/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000, // 120 second timeout for file uploads
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const progress = progressEvent.loaded / progressEvent.total;
+          onProgress(progress);
+        }
+      },
     }),
 
   // Upload file from path - creates FormData internally

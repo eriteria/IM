@@ -144,6 +144,7 @@ class CallSoundService {
   /**
    * Play the incoming call ringtone
    * This is played when receiving a call
+   * Uses the device's default phone ringtone on Android
    */
   async playIncomingRingtone(): Promise<void> {
     if (this.isPlaying && this.currentSound === 'incoming') {
@@ -151,7 +152,7 @@ class CallSoundService {
       return; // Already playing
     }
 
-    console.log('[CallSound] === PLAYING INCOMING RINGTONE ===');
+    console.log('[CallSound] === PLAYING INCOMING RINGTONE (DEFAULT PHONE RINGTONE) ===');
 
     await this.stopAllSounds();
     this.currentSound = 'incoming';
@@ -159,10 +160,12 @@ class CallSoundService {
 
     try {
       if (Platform.OS === 'android') {
-        console.log('[CallSound] Calling NativeCallSound.playSound(ringtone_incoming, true)');
-        const result = await NativeCallSound.playSound('ringtone_incoming', true);
-        console.log('[CallSound] NativeCallSound.playSound result:', result);
+        // Use the device's default phone ringtone
+        console.log('[CallSound] Calling NativeCallSound.playDefaultRingtone()');
+        const result = await NativeCallSound.playDefaultRingtone();
+        console.log('[CallSound] NativeCallSound.playDefaultRingtone result:', result);
       } else if (Platform.OS === 'ios') {
+        // On iOS, use the bundled ringtone (iOS handles system ringtone via CallKit)
         console.log('[CallSound] Playing iOS sound: ringtone_incoming');
         await this.playIOSSound('ringtone_incoming', true);
       }
@@ -259,8 +262,11 @@ class CallSoundService {
         // Stop the native sound player
         console.log('[CallSound] Stopping Android native sound player...');
         await NativeCallSound.stopSound();
-        // Also stop the ringtone (in case it was started by native notification service)
-        console.log('[CallSound] Stopping Android native ringtone...');
+        // Also stop the default ringtone (in case it was started by playIncomingRingtone)
+        console.log('[CallSound] Stopping Android default ringtone...');
+        await NativeCallSound.stopDefaultRingtone();
+        // Also stop the native notification ringtone (in case it was started by native notification service)
+        console.log('[CallSound] Stopping Android native notification ringtone...');
         await NativeCallSound.stopRingtone();
         console.log('[CallSound] Android sounds stopped');
       } else if (Platform.OS === 'ios') {

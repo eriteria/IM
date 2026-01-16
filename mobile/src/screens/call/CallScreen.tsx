@@ -771,7 +771,7 @@ const CallScreen: React.FC = () => {
         setCallStatus('ringing');
         // Play the outgoing call tone (ringback tone / dial tone)
         callSoundService.playOutgoingTone();
-        ringingTimeoutRef.current = setTimeout(() => {
+        ringingTimeoutRef.current = setTimeout(async () => {
           // Check if call was already terminated (e.g., declined)
           if (isCallTerminatedRef.current) {
             console.log('Ringing timeout skipped - call already terminated');
@@ -782,7 +782,9 @@ const CallScreen: React.FC = () => {
           console.log('Timeout check - hasOtherParticipantRef:', hasOtherParticipantRef.current, 'remoteParticipants:', newRoom.remoteParticipants.size);
           if (!hasOtherParticipantRef.current && newRoom.remoteParticipants.size === 0) {
             console.log('Call timeout - no answer after 30 seconds');
-            callSoundService.stopAllSounds();
+            // Stop the dial tone first and wait for it to complete
+            await callSoundService.stopAllSounds();
+            console.log('Dial tone stopped after timeout');
             Alert.alert('Call Ended', 'No answer');
             handleEndCall();
           } else {
@@ -850,24 +852,32 @@ const CallScreen: React.FC = () => {
     }
     isCallTerminatedRef.current = true;
 
+    console.log('[CallScreen] handleEndCall started');
+
     // Clear all timeouts
     if (ringingTimeoutRef.current) {
+      console.log('[CallScreen] Clearing ringing timeout in handleEndCall');
       clearTimeout(ringingTimeoutRef.current);
       ringingTimeoutRef.current = null;
     }
 
-    // Stop any playing sounds first
+    // Stop any playing sounds first and log it
+    console.log('[CallScreen] Stopping all sounds before ending call...');
     await callSoundService.stopAllSounds();
+    console.log('[CallScreen] All sounds stopped');
 
     try {
       if (activeCall?.id) {
+        console.log('[CallScreen] Ending call via SignalR:', activeCall.id);
         await signalr.endCall(activeCall.id);
+        console.log('[CallScreen] Call ended via SignalR');
       }
     } catch (error) {
-      console.error('Error ending call:', error);
+      console.error('[CallScreen] Error ending call:', error);
     }
 
     // Play the call ended tone
+    console.log('[CallScreen] Playing ended tone');
     callSoundService.playEndedTone();
 
     await cleanupCall();

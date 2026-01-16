@@ -41,6 +41,38 @@ export const NativeCallSound = {
   },
 
   /**
+   * Play the device's default phone ringtone
+   * This uses the system ringtone configured by the user
+   */
+  playDefaultRingtone: async (): Promise<boolean> => {
+    if (Platform.OS === 'android' && CallSoundModule) {
+      try {
+        console.log('NativeCallSound.playDefaultRingtone');
+        return await CallSoundModule.playDefaultRingtone();
+      } catch (error) {
+        console.log('Error playing default ringtone:', error);
+        return false;
+      }
+    }
+    return false;
+  },
+
+  /**
+   * Stop the default ringtone
+   */
+  stopDefaultRingtone: async (): Promise<boolean> => {
+    if (Platform.OS === 'android' && CallSoundModule) {
+      try {
+        return await CallSoundModule.stopDefaultRingtone();
+      } catch (error) {
+        console.log('Error stopping default ringtone:', error);
+        return false;
+      }
+    }
+    return false;
+  },
+
+  /**
    * Stop the native ringtone and vibration
    * Call this when a call is answered, declined, or ended
    */

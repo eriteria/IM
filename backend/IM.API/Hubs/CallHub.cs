@@ -314,9 +314,26 @@ public class CallHub : Hub
 
                 if (otherParticipantIds.Any())
                 {
+                    // Get caller info for missed call notification
+                    var caller = await _userService.GetUserByIdAsync(userId);
+                    var callerName = caller?.DisplayName ?? caller?.NominalRoll?.FullName ?? "Unknown";
+                    var callType = call.Type.ToString();
+
                     _logger.LogInformation("Sending call ended push notification to {Count} participants for call {CallId}",
                         otherParticipantIds.Count, callId);
-                    await _notificationService.SendCallEndedNotificationAsync(callId, otherParticipantIds);
+                    await _notificationService.SendCallEndedNotificationAsync(callId, otherParticipantIds, callerName, callType, call.ConversationId);
+
+                    // Also send CallEnded directly to participants' SignalR connections
+                    // This is needed because receivers may not have joined the call group yet
+                    foreach (var participantId in otherParticipantIds)
+                    {
+                        var connections = GetUserConnectionIds(participantId);
+                        foreach (var connectionId in connections)
+                        {
+                            _logger.LogInformation("Sending CallEnded to connection {ConnectionId} for user {UserId}", connectionId, participantId);
+                            await Clients.Client(connectionId).SendAsync("CallEnded", callId, userId);
+                        }
+                    }
                 }
             }
 

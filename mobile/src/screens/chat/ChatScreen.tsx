@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import {
   View,
   FlatList,
@@ -7,12 +7,21 @@ import {
   Platform,
   ActivityIndicator,
   Text,
+  TextInput,
   TouchableOpacity,
   Alert,
   Animated,
   Modal,
   Pressable,
+  Dimensions,
+  Share,
+  Image,
+  StatusBar,
+  InteractionManager,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
+import RNFS from 'react-native-fs';
+import FileViewer from 'react-native-file-viewer';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -47,6 +56,7 @@ import { RootStackParamList } from '../../navigation/RootNavigator';
 import { Message, Conversation } from '../../types';
 import { useTheme } from '../../context';
 import { FONTS, SPACING } from '../../utils/theme';
+import { formatLastSeen } from '../../utils/dateUtils';
 import { AppConfig } from '../../config';
 // TODO: Re-enable when proper E2E encryption is implemented
 // import { encryptForConversation, decryptFromConversation } from '../../services/encryption';
@@ -57,7 +67,7 @@ type ChatScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'C
 const ChatScreen: React.FC = () => {
   const route = useRoute<ChatScreenRouteProp>();
   const navigation = useNavigation<ChatScreenNavigationProp>();
-  const { conversationId } = route.params;
+  const { conversationId, openSearch } = route.params;
   const { colors } = useTheme();
 
   const { userId } = useAuthStore();
@@ -96,101 +106,177 @@ const ChatScreen: React.FC = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [showCallMenu, setShowCallMenu] = useState(false);
+  const [showDocumentPreview, setShowDocumentPreview] = useState(false);
+  const [isSearchMode, setIsSearchMode] = useState(openSearch || false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [documentPreviewData, setDocumentPreviewData] = useState<{
+    mediaUrl: string;
+    fileName: string;
+    fileSize?: number;
+  } | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [localFilePath, setLocalFilePath] = useState<string | null>(null);
   const highlightAnim = useRef(new Animated.Value(0)).current;
   const flatListRef = useRef<FlatList>(null);
 
   const conversation = getConversation(conversationId);
 
+  // Defer SignalR operations to allow UI to render first
   useEffect(() => {
-    joinConversation(conversationId);
-    markConversationRead(conversationId);
-
-    // Set active conversation to track which chat is currently open
+    // Set active conversation immediately (synchronous, fast)
     useChatStore.getState().setActiveConversation(conversationId);
-
-    // Reset unread count when entering the chat
     useChatStore.getState().resetUnreadCount(conversationId);
 
+    // Defer network operations to allow UI to be interactive first
+    const handle = InteractionManager.runAfterInteractions(() => {
+      joinConversation(conversationId);
+      markConversationRead(conversationId);
+    });
+
     return () => {
+      handle.cancel();
       leaveConversation(conversationId);
-      // Clear active conversation when leaving
       useChatStore.getState().setActiveConversation(null);
     };
   }, [conversationId]);
 
-  useEffect(() => {
-    const otherParticipant = conversation?.participants.find(
-      (p) => p.userId !== userId
-    );
+  // Memoize the other participant to avoid recalculating on every render
+  const otherParticipant = useMemo(() => {
+    return conversation?.participants.find((p) => p.userId !== userId);
+  }, [conversation?.participants, userId]);
 
-    navigation.setOptions({
-      headerTitle: '',
-      headerLeft: ({ canGoBack }) => (
-        <View style={styles.headerLeftContainer}>
-          {canGoBack && (
+  // Memoize header title data to minimize re-renders
+  const headerData = useMemo(() => ({
+    name: conversation?.type === 'Group'
+      ? conversation.name
+      : otherParticipant?.displayName || otherParticipant?.fullName,
+    avatarUri: conversation?.type === 'Group'
+      ? conversation.iconUrl
+      : otherParticipant?.profilePictureUrl,
+    avatarName: conversation?.type === 'Group'
+      ? conversation.name || 'Group'
+      : otherParticipant?.displayName || otherParticipant?.fullName || '',
+    isOnline: conversation?.type === 'Private' && otherParticipant?.isOnline,
+    isGroup: conversation?.type === 'Group',
+    otherUserId: otherParticipant?.userId,
+    lastSeen: otherParticipant?.lastSeen,
+  }), [conversation?.type, conversation?.name, conversation?.iconUrl, otherParticipant]);
+
+  // Check if anyone is typing (excluding self)
+  const isTyping = useMemo(() => {
+    return typingUserIds.filter(id => id !== userId).length > 0;
+  }, [typingUserIds, userId]);
+
+  // Filter messages based on search query
+  const filteredMessages = useMemo(() => {
+    if (!searchQuery.trim()) return conversationMessages;
+    const query = searchQuery.toLowerCase();
+    return conversationMessages.filter(
+      (msg) => msg.content?.toLowerCase().includes(query)
+    );
+  }, [conversationMessages, searchQuery]);
+
+  useEffect(() => {
+    if (isSearchMode) {
+      navigation.setOptions({
+        headerTitle: '',
+        headerLeft: () => (
+          <View style={styles.searchHeaderContainer}>
             <TouchableOpacity
-              onPress={() => navigation.goBack()}
+              onPress={() => {
+                setIsSearchMode(false);
+                setSearchQuery('');
+              }}
               style={styles.backButton}
             >
               <Icon name="chevron-left" size={28} color={colors.headerText} />
             </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={styles.headerTitle}
-            onPress={() => {
-              if (conversation?.type === 'Group') {
-                navigation.navigate('GroupInfo', { conversationId });
-              } else if (otherParticipant) {
-                navigation.navigate('ContactInfo', { userId: otherParticipant.userId });
-              }
-            }}
-          >
-            <Avatar
-              uri={
-                conversation?.type === 'Group'
-                  ? conversation.iconUrl
-                  : otherParticipant?.profilePictureUrl
-              }
-              name={
-                conversation?.type === 'Group'
-                  ? conversation.name || 'Group'
-                  : otherParticipant?.displayName || otherParticipant?.fullName || ''
-              }
-              size={36}
+            <TextInput
+              style={[styles.searchInput, { color: colors.headerText }]}
+              placeholder="Search messages..."
+              placeholderTextColor={colors.headerText + '80'}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoFocus
             />
-            <View style={styles.headerTitleText}>
-              <Text style={[styles.headerName, { color: colors.headerText }]} numberOfLines={1}>
-                {conversation?.type === 'Group'
-                  ? conversation.name
-                  : otherParticipant?.displayName || otherParticipant?.fullName}
-              </Text>
-              {typingUserIds.length > 0 ? (
-                <Text style={[styles.headerStatus, { color: colors.headerText }]}>typing...</Text>
-              ) : conversation?.type === 'Private' && otherParticipant?.isOnline ? (
-                <Text style={[styles.headerStatus, { color: colors.headerText }]}>online</Text>
-              ) : null}
-            </View>
-          </TouchableOpacity>
-        </View>
-      ),
-      headerRight: () => (
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setShowMediaPicker(true)}
-          >
-            <Icon name="camera" size={24} color={colors.headerText} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setShowCallMenu(true)}
-          >
-            <Icon name="phone" size={24} color={colors.headerText} />
-          </TouchableOpacity>
-        </View>
-      ),
-    });
-  }, [navigation, conversation, typingUserIds, userId, conversationId, colors]);
+          </View>
+        ),
+        headerRight: () => (
+          <View style={styles.headerRight}>
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                style={styles.headerButton}
+                onPress={() => setSearchQuery('')}
+              >
+                <Icon name="close" size={24} color={colors.headerText} />
+              </TouchableOpacity>
+            )}
+          </View>
+        ),
+      });
+    } else {
+      navigation.setOptions({
+        headerTitle: '',
+        headerLeft: ({ canGoBack }) => (
+          <View style={styles.headerLeftContainer}>
+            {canGoBack && (
+              <TouchableOpacity
+                onPress={() => navigation.goBack()}
+                style={styles.backButton}
+              >
+                <Icon name="chevron-left" size={28} color={colors.headerText} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.headerTitle}
+              onPress={() => {
+                if (headerData.isGroup) {
+                  navigation.navigate('GroupInfo', { conversationId });
+                } else if (headerData.otherUserId) {
+                  navigation.navigate('ContactInfo', { userId: headerData.otherUserId });
+                }
+              }}
+            >
+              <Avatar
+                uri={headerData.avatarUri}
+                name={headerData.avatarName}
+                size={36}
+              />
+              <View style={styles.headerTitleText}>
+                <Text style={[styles.headerName, { color: colors.headerText }]} numberOfLines={1}>
+                  {headerData.name}
+                </Text>
+                {isTyping ? (
+                  <Text style={[styles.headerStatus, { color: colors.headerText }]}>typing...</Text>
+                ) : headerData.isOnline ? (
+                  <Text style={[styles.headerStatus, { color: colors.headerText }]}>online</Text>
+                ) : !headerData.isGroup && headerData.lastSeen ? (
+                  <Text style={[styles.headerStatus, { color: colors.headerText }]}>{formatLastSeen(headerData.lastSeen)}</Text>
+                ) : null}
+              </View>
+            </TouchableOpacity>
+          </View>
+        ),
+        headerRight: () => (
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={styles.headerButton}
+              onPress={() => setIsSearchMode(true)}
+            >
+              <Icon name="magnify" size={24} color={colors.headerText} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.headerButton}
+              onPress={() => setShowCallMenu(true)}
+            >
+              <Icon name="phone" size={24} color={colors.headerText} />
+            </TouchableOpacity>
+          </View>
+        ),
+      });
+    }
+  }, [navigation, headerData, isTyping, conversationId, colors.headerText, isSearchMode, searchQuery]);
 
   const handleSendMessage = async (content: string) => {
     // Add optimistic message immediately for instant display
@@ -243,38 +329,101 @@ const ChatScreen: React.FC = () => {
     setShowMediaPicker(false);
     setIsUploading(true);
 
+    // On Android, content:// URIs from DocumentPicker need special handling
+    // We need to ensure the file URI and name are properly formatted
+    let fileUri = media.uri;
+    let fileName = media.fileName || `file_${Date.now()}`;
+
+    // On Android, ensure proper file:// prefix for non-content URIs
+    if (Platform.OS === 'android' && !fileUri.startsWith('content://') && !fileUri.startsWith('file://')) {
+      fileUri = `file://${fileUri}`;
+    }
+
+    // Ensure fileName has proper extension for the mime type
+    if (media.mimeType === 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
+      fileName = fileName.includes('.') ? fileName : `${fileName}.pdf`;
+    }
+
+    // Determine message type
+    const messageType = media.type === 'image' ? 'Image'
+      : media.type === 'video' ? 'Video'
+      : media.type === 'audio' ? 'Audio'
+      : 'Document';
+
+    // Create optimistic message with local URI for immediate preview
+    const tempId = useChatStore.getState().addOptimisticMessage(
+      conversationId,
+      {
+        type: messageType,
+        content: fileName,
+        localMediaUri: media.uri, // Use local URI for preview
+        mediaMimeType: media.mimeType,
+        mediaSize: media.fileSize,
+        uploadProgress: 0,
+        replyToMessageId: replyingTo?.id,
+        replyToMessage: replyingTo || undefined,
+      },
+      userId || '',
+      undefined
+    );
+
+    setReplyingTo(null);
+
     try {
+      console.log('[Media Upload] Uploading file:', { uri: fileUri, fileName, mimeType: media.mimeType });
+
       // Create form data for file upload
       const formData = new FormData();
       formData.append('file', {
-        uri: media.uri,
-        name: media.fileName || `file_${Date.now()}`,
+        uri: fileUri,
+        name: fileName,
         type: media.mimeType || 'application/octet-stream',
       } as any);
 
-      // Upload file
-      const uploadResponse = await filesApi.upload(formData);
+      // Upload file with progress tracking
+      const uploadResponse = await filesApi.uploadWithProgress(
+        formData,
+        (progress) => {
+          // Update upload progress in the optimistic message
+          useChatStore.getState().updateMessage(conversationId, tempId, {
+            uploadProgress: progress,
+          });
+        }
+      );
       const { fileUrl } = uploadResponse.data;
 
-      // Send message with media
-      const messageType = media.type === 'image' ? 'Image'
-        : media.type === 'video' ? 'Video'
-        : media.type === 'audio' ? 'Audio'
-        : 'Document';
+      console.log('[Media Upload] Upload successful:', fileUrl);
 
+      // Update the optimistic message with the server URL
+      useChatStore.getState().updateMessage(conversationId, tempId, {
+        mediaUrl: fileUrl,
+        localMediaUri: undefined, // Clear local URI now that we have server URL
+        uploadProgress: 1,
+      });
+
+      // Send message with media via SignalR
       await sendMessage(conversationId, {
         type: messageType,
         mediaUrl: fileUrl,
         mediaMimeType: media.mimeType,
         mediaSize: media.fileSize,
-        fileName: media.fileName,
+        fileName: fileName,
         replyToMessageId: replyingTo?.id,
       });
-
-      setReplyingTo(null);
-    } catch (error) {
-      console.error('Failed to send media:', error);
-      Alert.alert('Error', 'Failed to send media. Please try again.');
+    } catch (error: any) {
+      console.error('[Media Upload] Failed to send media:', error);
+      // Mark the optimistic message as failed
+      useChatStore.getState().failOptimisticMessage(conversationId, tempId);
+      // Provide more specific error messages
+      let errorMessage = 'Failed to send media. Please try again.';
+      if (error.response?.status === 413) {
+        errorMessage = 'File is too large. Please select a smaller file.';
+      } else if (error.response?.status === 415) {
+        errorMessage = 'File type not supported.';
+      } else if (error.message?.includes('Network')) {
+        errorMessage = 'Network error. Please check your connection and try again.';
+      }
+      Alert.alert('Error', errorMessage);
     } finally {
       setIsUploading(false);
     }
@@ -376,52 +525,54 @@ const ChatScreen: React.FC = () => {
     }
   };
 
-  // Selection mode handlers
-  const enterSelectionMode = (message: Message) => {
+  // Selection mode handlers - memoized for performance
+  const enterSelectionMode = useCallback((message: Message) => {
     setIsSelectionMode(true);
     setSelectedMessages(new Set([message.id]));
-  };
+  }, []);
 
-  const exitSelectionMode = () => {
+  const exitSelectionMode = useCallback(() => {
     setIsSelectionMode(false);
     setSelectedMessages(new Set());
-  };
+  }, []);
 
-  const toggleMessageSelection = (messageId: string) => {
-    const newSelected = new Set(selectedMessages);
-    if (newSelected.has(messageId)) {
-      newSelected.delete(messageId);
-      if (newSelected.size === 0) {
-        exitSelectionMode();
-        return;
+  const toggleMessageSelection = useCallback((messageId: string) => {
+    setSelectedMessages(prev => {
+      const newSelected = new Set(prev);
+      if (newSelected.has(messageId)) {
+        newSelected.delete(messageId);
+        if (newSelected.size === 0) {
+          setIsSelectionMode(false);
+          return new Set();
+        }
+      } else {
+        newSelected.add(messageId);
       }
-    } else {
-      newSelected.add(messageId);
-    }
-    setSelectedMessages(newSelected);
-  };
+      return newSelected;
+    });
+  }, []);
 
-  const getSelectedMessage = (): Message | null => {
+  const getSelectedMessage = useCallback((): Message | null => {
     if (selectedMessages.size === 1) {
       const messageId = Array.from(selectedMessages)[0];
       return conversationMessages.find((m) => m.id === messageId) || null;
     }
     return null;
-  };
+  }, [selectedMessages, conversationMessages]);
 
   // Swipe to reply handler
-  const handleSwipeToReply = (message: Message) => {
+  const handleSwipeToReply = useCallback((message: Message) => {
     setReplyingTo(message);
-  };
+  }, []);
 
   // Long press for selection/forward mode
-  const handleMessageLongPress = (message: Message) => {
+  const handleMessageLongPress = useCallback((message: Message) => {
     if (isSelectionMode) {
       toggleMessageSelection(message.id);
     } else {
       enterSelectionMode(message);
     }
-  };
+  }, [isSelectionMode, toggleMessageSelection, enterSelectionMode]);
 
   // Double tap for reactions
   const handleDoubleTap = (message: Message, event: { x: number; y: number }) => {
@@ -579,7 +730,43 @@ const ChatScreen: React.FC = () => {
     }
   }, [conversationMessages, highlightAnim]);
 
-  const renderMessage = ({ item, index }: { item: Message; index: number }) => {
+  // Memoized callback for media press
+  const handleMediaPress = useCallback((message: Message) => {
+    if (message.mediaUrl) {
+      if (message.type === 'Image' || message.type === 'Video') {
+        navigation.navigate('MediaViewer', {
+          mediaUrl: message.mediaUrl,
+          mediaType: message.type.toLowerCase(),
+          senderName: message.senderName,
+          timestamp: message.createdAt,
+        });
+      } else if (message.type === 'Document') {
+        // Show in-app document preview modal (like WhatsApp)
+        setDocumentPreviewData({
+          mediaUrl: message.mediaUrl,
+          fileName: message.content || 'document',
+          fileSize: message.mediaSize,
+        });
+        setLocalFilePath(null);
+        setShowDocumentPreview(true);
+      }
+    }
+  }, [navigation]);
+
+  // Memoized callback for call
+  const handleCallBack = useCallback((type: 'Voice' | 'Video') => {
+    navigation.navigate('Call', { conversationId, type });
+  }, [navigation, conversationId]);
+
+  // Memoized highlight background color
+  const highlightBackgroundColor = useMemo(() => {
+    return highlightAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ['transparent', colors.primary + '30'],
+    });
+  }, [highlightAnim, colors.primary]);
+
+  const renderMessage = useCallback(({ item, index }: { item: Message; index: number }) => {
     const isMine = item.senderId === userId;
     const showSenderName =
       conversation?.type === 'Group' &&
@@ -589,10 +776,6 @@ const ChatScreen: React.FC = () => {
 
     const isHighlighted = highlightedMessageId === item.id;
     const isSelected = selectedMessages.has(item.id);
-    const highlightBackgroundColor = highlightAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: ['transparent', colors.primary + '30'],
-    });
 
     const messageContent = (
       <TouchableOpacity
@@ -622,38 +805,13 @@ const ChatScreen: React.FC = () => {
             isMine={isMine}
             showSenderName={showSenderName}
             onLongPress={() => handleMessageLongPress(item)}
-            onMediaPress={async () => {
-              if (item.mediaUrl) {
-                if (item.type === 'Image' || item.type === 'Video') {
-                  navigation.navigate('MediaViewer', {
-                    mediaUrl: item.mediaUrl,
-                    mediaType: item.type.toLowerCase(),
-                    senderName: item.senderName,
-                    timestamp: item.createdAt,
-                  });
-                } else if (item.type === 'Document') {
-                  // Navigate to document viewer
-                  navigation.navigate('DocumentViewer', {
-                    mediaUrl: item.mediaUrl,
-                    fileName: item.content || 'document',
-                    fileSize: item.mediaSize,
-                    senderName: item.senderName,
-                    timestamp: item.createdAt,
-                  });
-                }
-              }
-            }}
+            onMediaPress={() => handleMediaPress(item)}
             onReplyPress={() => {
               if (item.replyToMessageId) {
                 scrollToAndHighlightMessage(item.replyToMessageId);
               }
             }}
-            onCallBack={(type) => {
-              navigation.navigate('Call', {
-                conversationId,
-                type,
-              });
-            }}
+            onCallBack={handleCallBack}
           />
         </Animated.View>
       </TouchableOpacity>
@@ -672,7 +830,22 @@ const ChatScreen: React.FC = () => {
     }
 
     return messageContent;
-  };
+  }, [
+    userId,
+    conversation?.type,
+    conversationMessages,
+    highlightedMessageId,
+    selectedMessages,
+    isSelectionMode,
+    highlightBackgroundColor,
+    colors.primary,
+    handleMediaPress,
+    handleCallBack,
+    scrollToAndHighlightMessage,
+    toggleMessageSelection,
+    handleMessageLongPress,
+    handleSwipeToReply,
+  ]);
 
   const renderFooter = () => {
     if (!isLoadingMore) return null;
@@ -683,18 +856,256 @@ const ChatScreen: React.FC = () => {
     );
   };
 
-  // Filter out current user - we only want to show when OTHERS are typing
-  const otherTypingUserIds = React.useMemo(() => {
+  // Filter out current user and get typing user IDs - we only want to show when OTHERS are typing
+  const otherTypingUserIds = useMemo(() => {
     return typingUserIds.filter(id => id !== userId);
   }, [typingUserIds, userId]);
 
   // Get the names of typing users
-  const typingNames = React.useMemo(() => {
+  const typingNames = useMemo(() => {
     return otherTypingUserIds.map(id => {
       const participant = conversation?.participants.find(p => p.userId === id);
       return participant?.displayName || participant?.fullName || 'Someone';
     });
   }, [otherTypingUserIds, conversation?.participants]);
+
+  // Document preview helpers
+  const getAbsoluteUrl = (url: string | undefined): string => {
+    if (!url) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    // Use apiUrl (base URL without /api)
+    const baseUrl = AppConfig.apiUrl;
+    return `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}`;
+  };
+
+  const getFileExtension = (fileName: string): string => {
+    const parts = fileName.split('.');
+    return parts.length > 1 ? parts.pop()?.toLowerCase() || '' : '';
+  };
+
+  const isPdfFile = (fileName: string): boolean => {
+    return getFileExtension(fileName) === 'pdf';
+  };
+
+  const isImageFile = (fileName: string): boolean => {
+    const ext = getFileExtension(fileName);
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
+  };
+
+  // Check if file can be previewed with Google Docs Viewer
+  const canPreviewWithGoogleDocs = (fileName: string): boolean => {
+    const ext = getFileExtension(fileName);
+    return ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext);
+  };
+
+  // Get Google Docs Viewer URL for document preview
+  const getGoogleDocsViewerUrl = (url: string): string => {
+    return `https://docs.google.com/gview?embedded=true&url=${encodeURIComponent(url)}`;
+  };
+
+  const getDocumentIcon = (fileName: string): string => {
+    const ext = getFileExtension(fileName);
+    const iconMap: { [key: string]: string } = {
+      pdf: 'file-pdf-box',
+      doc: 'file-word',
+      docx: 'file-word',
+      xls: 'file-excel',
+      xlsx: 'file-excel',
+      ppt: 'file-powerpoint',
+      pptx: 'file-powerpoint',
+      txt: 'file-document-outline',
+      zip: 'folder-zip',
+      rar: 'folder-zip',
+    };
+    return iconMap[ext] || 'file-document-outline';
+  };
+
+  const formatFileSize = (bytes: number | undefined): string => {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const handleDownloadDocument = async () => {
+    if (!documentPreviewData) return;
+
+    const { mediaUrl, fileName } = documentPreviewData;
+    const absoluteUrl = getAbsoluteUrl(mediaUrl);
+    const downloadDest = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+
+    setIsDownloading(true);
+    setDownloadProgress(0);
+
+    try {
+      const result = await RNFS.downloadFile({
+        fromUrl: absoluteUrl,
+        toFile: downloadDest,
+        progress: (res) => {
+          const progress = res.bytesWritten / res.contentLength;
+          setDownloadProgress(progress);
+        },
+        progressDivider: 5,
+      }).promise;
+
+      if (result.statusCode === 200) {
+        setLocalFilePath(downloadDest);
+        Alert.alert('Success', 'Document downloaded successfully');
+      } else {
+        throw new Error(`Download failed with status ${result.statusCode}`);
+      }
+    } catch (error) {
+      console.error('Download error:', error);
+      Alert.alert('Error', 'Failed to download document');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleOpenDocument = async () => {
+    console.log('[Document] handleOpenDocument called');
+
+    try {
+      if (!documentPreviewData) {
+        console.log('[Document] No documentPreviewData');
+        return;
+      }
+
+      const { mediaUrl, fileName } = documentPreviewData;
+      console.log('[Document] Opening:', fileName, 'from:', mediaUrl);
+
+      // Get absolute URL
+      const absoluteUrl = getAbsoluteUrl(mediaUrl);
+      console.log('[Document] Absolute URL:', absoluteUrl);
+
+      // Get download destination
+      const downloadDest = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      console.log('[Document] Download dest:', downloadDest);
+
+      // Check if already downloaded
+      let filePath = localFilePath;
+      if (!filePath) {
+        console.log('[Document] Downloading file...');
+        setIsDownloading(true);
+
+        const downloadResult = RNFS.downloadFile({
+          fromUrl: absoluteUrl,
+          toFile: downloadDest,
+          progress: (res) => {
+            const progress = res.bytesWritten / res.contentLength;
+            setDownloadProgress(progress);
+          },
+          progressDivider: 5,
+        });
+
+        const result = await downloadResult.promise;
+        console.log('[Document] Download result:', result.statusCode);
+
+        if (result.statusCode === 200) {
+          filePath = downloadDest;
+          setLocalFilePath(downloadDest);
+        } else {
+          throw new Error(`Download failed with status ${result.statusCode}`);
+        }
+        setIsDownloading(false);
+      }
+
+      console.log('[Document] Opening with FileViewer:', filePath);
+      await FileViewer.open(filePath, { showOpenWithDialog: true });
+      console.log('[Document] FileViewer opened');
+    } catch (error: any) {
+      console.error('[Document] Error:', error);
+      setIsDownloading(false);
+      // Check if error is about no app available
+      if (error?.message?.includes('No app associated') || error?.message?.includes('No Activity found')) {
+        Alert.alert('No App Available', 'There is no app installed to open this file type. Please install an appropriate app or use Share to send it to another app.');
+      } else {
+        Alert.alert('Error', 'Failed to open document');
+      }
+    }
+  };
+
+  const handleShareDocument = async () => {
+    console.log('[Document] handleShareDocument called');
+
+    try {
+      if (!documentPreviewData) {
+        console.log('[Document] No documentPreviewData for share');
+        return;
+      }
+
+      const { mediaUrl, fileName } = documentPreviewData;
+      console.log('[Document] Sharing:', fileName);
+
+      // Get absolute URL
+      const absoluteUrl = getAbsoluteUrl(mediaUrl);
+      const downloadDest = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+
+      // Check if already downloaded
+      let filePath = localFilePath;
+      if (!filePath) {
+        console.log('[Document] Downloading for share...');
+        setIsDownloading(true);
+
+        const result = await RNFS.downloadFile({
+          fromUrl: absoluteUrl,
+          toFile: downloadDest,
+          progress: (res) => {
+            const progress = res.bytesWritten / res.contentLength;
+            setDownloadProgress(progress);
+          },
+          progressDivider: 5,
+        }).promise;
+
+        if (result.statusCode === 200) {
+          filePath = downloadDest;
+          setLocalFilePath(downloadDest);
+        } else {
+          throw new Error(`Download failed with status ${result.statusCode}`);
+        }
+        setIsDownloading(false);
+      }
+
+      console.log('[Document] Sharing file:', filePath);
+      const shareUrl = Platform.OS === 'ios' ? filePath : `file://${filePath}`;
+      await Share.share({
+        url: shareUrl,
+        title: fileName,
+      });
+      console.log('[Document] Share completed');
+    } catch (error) {
+      console.error('[Document] Share error:', error);
+      setIsDownloading(false);
+      Alert.alert('Error', 'Failed to share document');
+    }
+  };
+
+  const closeDocumentPreview = () => {
+    setShowDocumentPreview(false);
+    setDocumentPreviewData(null);
+    setIsDownloading(false);
+    setDownloadProgress(0);
+  };
+
+  // Memoized FlatList props for performance
+  const keyExtractor = useCallback((item: Message) => item.id, []);
+
+  // Memoize extraData to prevent unnecessary re-renders
+  const extraData = useMemo(() => ({
+    selectedMessages,
+    isSelectionMode,
+    highlightedMessageId,
+  }), [selectedMessages, isSelectionMode, highlightedMessageId]);
+
+  // Memoize typing indicator component
+  const typingIndicator = useMemo(() => {
+    if (otherTypingUserIds.length > 0) {
+      return <TypingIndicator isVisible={true} names={typingNames} />;
+    }
+    return null;
+  }, [otherTypingUserIds.length, typingNames]);
 
   if (isLoading) {
     return (
@@ -748,26 +1159,25 @@ const ChatScreen: React.FC = () => {
         <View style={styles.messagesContainer}>
           <FlatList
             ref={flatListRef}
-            data={conversationMessages}
+            data={isSearchMode ? filteredMessages : conversationMessages}
             renderItem={renderMessage}
-            keyExtractor={(item) => item.id}
+            keyExtractor={keyExtractor}
             inverted
-            extraData={{ typingUsersKey, otherTypingUserIds, typingNames, selectedMessages, isSelectionMode }}
+            extraData={extraData}
             onEndReached={loadMoreMessages}
             onEndReachedThreshold={0.5}
-            ListHeaderComponent={
-              otherTypingUserIds.length > 0 ? (
-                <TypingIndicator isVisible={true} names={typingNames} />
-              ) : null
-            }
+            ListHeaderComponent={typingIndicator}
             ListFooterComponent={renderFooter}
             contentContainerStyle={styles.messagesList}
             // Performance optimizations
-            removeClippedSubviews={true}
-            maxToRenderPerBatch={10}
-            windowSize={10}
-            initialNumToRender={15}
-            updateCellsBatchingPeriod={50}
+            removeClippedSubviews={Platform.OS === 'android'}
+            maxToRenderPerBatch={8}
+            windowSize={7}
+            initialNumToRender={10}
+            updateCellsBatchingPeriod={100}
+            maintainVisibleContentPosition={{
+              minIndexForVisible: 0,
+            }}
             onScrollToIndexFailed={(info) => {
               // If scroll fails, wait and try again
               setTimeout(() => {
@@ -876,10 +1286,157 @@ const ChatScreen: React.FC = () => {
             </View>
           </Pressable>
         </Modal>
+
+        {/* Document Preview Modal */}
+        <Modal
+          visible={showDocumentPreview}
+          transparent={false}
+          animationType="fade"
+          onRequestClose={closeDocumentPreview}
+          statusBarTranslucent
+        >
+          <View style={[styles.documentPreviewFullScreen, { backgroundColor: '#000' }]}>
+            {/* Header with close, download, share */}
+            <View style={[styles.documentPreviewHeader, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
+              <TouchableOpacity
+                style={styles.documentPreviewHeaderBtn}
+                onPress={closeDocumentPreview}
+              >
+                <Icon name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+
+              <View style={styles.documentPreviewHeaderTitle}>
+                <Text style={styles.documentPreviewHeaderText} numberOfLines={1}>
+                  {documentPreviewData?.fileName || 'Document'}
+                </Text>
+                {documentPreviewData?.fileSize && (
+                  <Text style={styles.documentPreviewHeaderSubtext}>
+                    {formatFileSize(documentPreviewData.fileSize)}
+                  </Text>
+                )}
+              </View>
+
+              <View style={styles.documentPreviewHeaderActions}>
+                {isDownloading ? (
+                  <View style={styles.documentPreviewHeaderBtn}>
+                    <ActivityIndicator size="small" color="#fff" />
+                  </View>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      style={styles.documentPreviewHeaderBtn}
+                      onPress={handleDownloadDocument}
+                    >
+                      <Icon name="download" size={24} color="#fff" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.documentPreviewHeaderBtn}
+                      onPress={handleShareDocument}
+                    >
+                      <Icon name="share-variant" size={24} color="#fff" />
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            </View>
+
+            {/* Preview content */}
+            <View style={styles.documentPreviewContent}>
+              {documentPreviewData && canPreviewWithGoogleDocs(documentPreviewData.fileName) ? (
+                // Use Google Docs Viewer for PDFs and Office documents
+                (() => {
+                  const absoluteUrl = getAbsoluteUrl(documentPreviewData.mediaUrl);
+                  const viewerUrl = getGoogleDocsViewerUrl(absoluteUrl);
+                  console.log('[Document Preview] mediaUrl:', documentPreviewData.mediaUrl);
+                  console.log('[Document Preview] absoluteUrl:', absoluteUrl);
+                  console.log('[Document Preview] viewerUrl:', viewerUrl);
+                  return (
+                    <WebView
+                      source={{ uri: viewerUrl }}
+                      style={styles.documentPreviewWebView}
+                      startInLoadingState
+                      originWhitelist={['*']}
+                      javaScriptEnabled={true}
+                      domStorageEnabled={true}
+                      scalesPageToFit={true}
+                      onLoadStart={() => console.log('[Document Preview] WebView loading started')}
+                      onLoadEnd={() => console.log('[Document Preview] WebView loading ended')}
+                      renderLoading={() => (
+                        <View style={styles.documentPreviewLoading}>
+                          <ActivityIndicator size="large" color="#fff" />
+                          <Text style={styles.documentPreviewLoadingText}>Loading document...</Text>
+                        </View>
+                      )}
+                      onError={(syntheticEvent) => {
+                        console.log('[Document Preview] WebView error:', syntheticEvent.nativeEvent);
+                      }}
+                    />
+                  );
+                })()
+              ) : documentPreviewData && isImageFile(documentPreviewData.fileName) ? (
+                <Image
+                  source={{ uri: getAbsoluteUrl(documentPreviewData.mediaUrl) }}
+                  style={styles.documentPreviewImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                // For other file types, show icon with open button
+                <View style={styles.documentPreviewIconWrapper}>
+                  <Icon
+                    name={documentPreviewData ? getDocumentIcon(documentPreviewData.fileName) : 'file-document-outline'}
+                    size={120}
+                    color="rgba(255,255,255,0.8)"
+                  />
+                  <Text style={styles.documentPreviewFileType}>
+                    {documentPreviewData ? getFileExtension(documentPreviewData.fileName).toUpperCase() : ''} Document
+                  </Text>
+                  {documentPreviewData?.fileSize && (
+                    <Text style={styles.documentPreviewTapText}>
+                      {formatFileSize(documentPreviewData.fileSize)}
+                    </Text>
+                  )}
+                  <TouchableOpacity
+                    style={styles.pdfLoadButton}
+                    onPress={handleOpenDocument}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <>
+                        <Icon name="open-in-new" size={20} color="#fff" />
+                        <Text style={styles.pdfLoadButtonText}>Open Document</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            {/* Download progress overlay */}
+            {isDownloading && (
+              <View style={styles.documentPreviewProgressOverlay}>
+                <View style={styles.documentPreviewProgressBar}>
+                  <View
+                    style={[
+                      styles.documentPreviewProgressFill,
+                      { width: `${downloadProgress * 100}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.documentPreviewProgressText}>
+                  Downloading... {Math.round(downloadProgress * 100)}%
+                </Text>
+              </View>
+            )}
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </GestureHandlerRootView>
   );
 };
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
   flex: {
@@ -896,6 +1453,17 @@ const styles = StyleSheet.create({
   headerLeftContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  searchHeaderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: FONTS.sizes.md,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
   },
   backButton: {
     paddingRight: SPACING.xs,
@@ -981,6 +1549,123 @@ const styles = StyleSheet.create({
     marginLeft: SPACING.xs,
     fontSize: FONTS.sizes.sm,
     fontWeight: '500',
+  },
+  // Full-screen document preview styles
+  documentPreviewFullScreen: {
+    flex: 1,
+  },
+  documentPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: Platform.OS === 'ios' ? 50 : StatusBar.currentHeight || 24,
+    paddingBottom: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+  },
+  documentPreviewHeaderBtn: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  documentPreviewHeaderTitle: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: SPACING.sm,
+  },
+  documentPreviewHeaderText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.md,
+    fontWeight: '600',
+  },
+  documentPreviewHeaderSubtext: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: FONTS.sizes.xs,
+    marginTop: 2,
+  },
+  documentPreviewHeaderActions: {
+    flexDirection: 'row',
+  },
+  documentPreviewContent: {
+    flex: 1,
+  },
+  documentPreviewWebView: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  documentPreviewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  documentPreviewLoading: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+  },
+  documentPreviewLoadingText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: FONTS.sizes.sm,
+    marginTop: SPACING.md,
+  },
+  documentPreviewIconWrapper: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  documentPreviewFileType: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: FONTS.sizes.xl,
+    fontWeight: '600',
+    marginTop: SPACING.lg,
+  },
+  documentPreviewTapText: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: FONTS.sizes.sm,
+    marginTop: SPACING.sm,
+    textAlign: 'center',
+    paddingHorizontal: SPACING.xl,
+  },
+  documentPreviewProgressOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: SPACING.lg,
+    paddingBottom: Platform.OS === 'ios' ? 40 : SPACING.lg,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+  documentPreviewProgressBar: {
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  documentPreviewProgressFill: {
+    height: '100%',
+    backgroundColor: '#25D366',
+    borderRadius: 2,
+  },
+  documentPreviewProgressText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+  },
+  // PDF preview styles
+  pdfLoadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.md,
+    borderRadius: SPACING.xl,
+    marginTop: SPACING.lg,
+  },
+  pdfLoadButtonText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.md,
+    fontWeight: '600',
+    marginLeft: SPACING.sm,
   },
 });
 

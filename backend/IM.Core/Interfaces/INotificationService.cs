@@ -6,7 +6,7 @@ public interface INotificationService
 {
     Task SendMessageNotificationAsync(Message message, IEnumerable<Guid> recipientIds);
     Task SendCallNotificationAsync(Call call, IEnumerable<Guid> recipientIds);
-    Task SendCallEndedNotificationAsync(Guid callId, IEnumerable<Guid> recipientIds);
+    Task SendCallEndedNotificationAsync(Guid callId, IEnumerable<Guid> recipientIds, string? callerName = null, string? callType = null, Guid? conversationId = null);
     Task SendGroupNotificationAsync(Conversation conversation, string message, IEnumerable<Guid> recipientIds);
     Task RegisterDeviceTokenAsync(Guid userId, string token, string platform, string? deviceId);
     Task RegisterVoipTokenAsync(Guid userId, string token, string platform, string? deviceId);

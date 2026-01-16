@@ -30,7 +30,7 @@ interface Channel {
   shortName: string;
   description?: string;
   iconUrl?: string;
-  memberCount: number;
+  followerCount: number;
   isFollowing: boolean;
   isVerified?: boolean;
   isMuted?: boolean;
@@ -175,7 +175,7 @@ const ChannelsScreen: React.FC = () => {
           </Text>
           <View style={styles.channelMeta}>
             <Icon name="account-group" size={12} color={colors.textSecondary} />
-            <Text style={styles.memberCount}>{formatMemberCount(item.memberCount)} followers</Text>
+            <Text style={styles.memberCount}>{formatMemberCount(item.followerCount)} followers</Text>
             {item.lastMessage && (
               <>
                 <Text style={styles.metaSeparator}>•</Text>

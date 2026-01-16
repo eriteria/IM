@@ -83,10 +83,24 @@ public class NotificationService : INotificationService
             .Include(u => u.NominalRoll)
             .FirstAsync(u => u.Id == message.SenderId);
 
+        // Get conversation to check if it's a group
+        var conversation = await _context.Conversations
+            .FirstOrDefaultAsync(c => c.Id == message.ConversationId);
+
         var senderName = sender.DisplayName ?? sender.NominalRoll.FullName;
         var messagePreview = message.Type == MessageType.Text
             ? (message.Content?.Length > 100 ? message.Content[..100] + "..." : message.Content)
             : GetMessageTypePreview(message.Type);
+
+        // For group messages, show "GroupName: SenderName: message"
+        // For private messages, show "SenderName: message"
+        var isGroup = conversation?.Type == ConversationType.Group;
+        var groupName = isGroup ? conversation?.Name ?? "Group" : null;
+        var notificationTitle = isGroup ? groupName : senderName;
+        var notificationBody = isGroup
+            ? $"{senderName}: {messagePreview ?? "New message"}"
+            : messagePreview ?? "New message";
+        var channelId = isGroup ? "groups" : "messages";
 
         // Include both Notification and Data payloads
         // Notification payload ensures system displays notification even when app is killed
@@ -97,19 +111,21 @@ public class NotificationService : INotificationService
             // Notification payload - displayed by system when app is in background/killed
             Notification = new Notification
             {
-                Title = senderName,
-                Body = messagePreview ?? "New message"
+                Title = notificationTitle,
+                Body = notificationBody
             },
             // Data payload - for app to process when notification is tapped
             Data = new Dictionary<string, string>
             {
-                { "type", "message" },
+                { "type", isGroup ? "group" : "message" },
                 { "conversationId", message.ConversationId.ToString() },
                 { "messageId", message.Id.ToString() },
                 { "senderId", message.SenderId.ToString() },
                 { "senderName", senderName },
                 { "messagePreview", messagePreview ?? "New message" },
-                { "messageType", message.Type.ToString() }
+                { "messageType", message.Type.ToString() },
+                { "groupName", groupName ?? "" },
+                { "isGroup", isGroup.ToString() }
             },
             Android = new AndroidConfig
             {
@@ -120,7 +136,7 @@ public class NotificationService : INotificationService
                 // Android-specific notification settings
                 Notification = new AndroidNotification
                 {
-                    ChannelId = "messages",
+                    ChannelId = channelId,
                     Icon = "ic_notification",
                     Color = "#128C7E",
                     Sound = "default",
@@ -142,8 +158,8 @@ public class NotificationService : INotificationService
                 {
                     Alert = new ApsAlert
                     {
-                        Title = senderName,
-                        Body = messagePreview ?? "New message"
+                        Title = notificationTitle,
+                        Body = notificationBody
                     },
                     Sound = "default",
                     ContentAvailable = true,
@@ -260,7 +276,7 @@ public class NotificationService : INotificationService
         }
     }
 
-    public async Task SendCallEndedNotificationAsync(Guid callId, IEnumerable<Guid> recipientIds)
+    public async Task SendCallEndedNotificationAsync(Guid callId, IEnumerable<Guid> recipientIds, string? callerName = null, string? callType = null, Guid? conversationId = null)
     {
         if (_firebaseMessaging == null)
         {
@@ -284,15 +300,31 @@ public class NotificationService : INotificationService
         {
             try
             {
-                // Data-only message to cancel the incoming call
+                // Data-only message to cancel the incoming call and show missed call
+                var dataPayload = new Dictionary<string, string>
+                {
+                    { "type", "call_ended" },
+                    { "callId", callId.ToString() }
+                };
+
+                // Add caller info for missed call notification if provided
+                if (!string.IsNullOrEmpty(callerName))
+                {
+                    dataPayload["callerName"] = callerName;
+                }
+                if (!string.IsNullOrEmpty(callType))
+                {
+                    dataPayload["callType"] = callType;
+                }
+                if (conversationId.HasValue)
+                {
+                    dataPayload["conversationId"] = conversationId.Value.ToString();
+                }
+
                 var firebaseMessage = new FirebaseMessage
                 {
                     Token = device.DeviceToken,
-                    Data = new Dictionary<string, string>
-                    {
-                        { "type", "call_ended" },
-                        { "callId", callId.ToString() }
-                    },
+                    Data = dataPayload,
                     Android = new AndroidConfig
                     {
                         Priority = Priority.High,

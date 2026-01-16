@@ -60,40 +60,45 @@ const ChatsScreen: React.FC = () => {
   }, []);
 
   // Load conversations from local database first (for offline support)
+  // Only load from cache if we're offline - otherwise wait for server data
   useEffect(() => {
     const loadFromLocalDB = async () => {
       try {
-        const localConversations = await conversationDBService.getActiveConversations();
-        if (localConversations.length > 0 && conversations.length === 0) {
-          // Convert WatermelonDB conversations to app format
-          const formattedConversations: Conversation[] = localConversations.map(conv => ({
-            id: conv.serverId,
-            type: conv.type === 'direct' ? 'Private' : 'Group',
-            name: conv.name || undefined,
-            iconUrl: conv.avatarUrl || undefined,
-            defaultMessageExpiry: 0 as const,
-            lastMessage: conv.lastMessageContent ? {
-              id: '',
-              conversationId: conv.serverId,
-              senderId: conv.lastMessageSenderId || '',
-              content: conv.lastMessageContent,
-              type: 'Text' as const,
-              isForwarded: false,
-              isEdited: false,
-              isDeleted: false,
-              status: 'Sent' as const,
-              createdAt: conv.lastMessageAt ? new Date(conv.lastMessageAt).toISOString() : '',
-              statuses: [],
-            } : undefined,
-            unreadCount: conv.unreadCount || 0,
-            isMuted: conv.isMuted || false,
-            isArchived: false,
-            isDeleted: conv.isDeleted || false,
-            participants: [],
-            createdAt: new Date(conv.createdAt).toISOString(),
-          }));
-          setConversations(formattedConversations);
-          setLoadedFromCache(true);
+        // Check if we're offline before loading from cache
+        const netState = await NetInfo.fetch();
+        if (!netState.isConnected) {
+          const localConversations = await conversationDBService.getActiveConversations();
+          if (localConversations.length > 0 && conversations.length === 0) {
+            // Convert WatermelonDB conversations to app format
+            const formattedConversations: Conversation[] = localConversations.map(conv => ({
+              id: conv.serverId,
+              type: conv.type === 'direct' ? 'Private' : 'Group',
+              name: conv.name || undefined,
+              iconUrl: conv.avatarUrl || undefined,
+              defaultMessageExpiry: 0 as const,
+              lastMessage: conv.lastMessageContent ? {
+                id: '',
+                conversationId: conv.serverId,
+                senderId: conv.lastMessageSenderId || '',
+                content: conv.lastMessageContent,
+                type: 'Text' as const,
+                isForwarded: false,
+                isEdited: false,
+                isDeleted: false,
+                status: 'Sent' as const,
+                createdAt: conv.lastMessageAt ? new Date(conv.lastMessageAt).toISOString() : '',
+                statuses: [],
+              } : undefined,
+              unreadCount: conv.unreadCount || 0,
+              isMuted: conv.isMuted || false,
+              isArchived: false,
+              isDeleted: conv.isDeleted || false,
+              participants: [],
+              createdAt: new Date(conv.createdAt).toISOString(),
+            }));
+            setConversations(formattedConversations);
+            setLoadedFromCache(true);
+          }
         }
       } catch (error) {
         console.error('Error loading conversations from local DB:', error);
@@ -153,7 +158,12 @@ const ChatsScreen: React.FC = () => {
       // Merge server data with local state to preserve real-time updates
       // Keep local unreadCount and lastMessage if they're more recent
       const currentConversations = useChatStore.getState().conversations;
-      const mergedConversations = data.map(serverConv => {
+
+      // Use a Map to deduplicate by conversation ID
+      const conversationMap = new Map<string, Conversation>();
+
+      // First, add all server conversations
+      data.forEach(serverConv => {
         const localConv = currentConversations.find(c => c.id === serverConv.id);
         if (localConv) {
           // Keep local unreadCount if it's higher (real-time messages arrived)
@@ -174,15 +184,19 @@ const ChatsScreen: React.FC = () => {
             ? localConv.lastMessageAt
             : serverConv.lastMessageAt;
 
-          return {
+          conversationMap.set(serverConv.id, {
             ...serverConv,
             unreadCount,
             lastMessage,
             lastMessageAt,
-          };
+          });
+        } else {
+          conversationMap.set(serverConv.id, serverConv);
         }
-        return serverConv;
       });
+
+      // Convert Map back to array (this ensures no duplicates)
+      const mergedConversations = Array.from(conversationMap.values());
 
       setConversations(mergedConversations);
       setLoadedFromCache(false);
@@ -210,9 +224,54 @@ const ChatsScreen: React.FC = () => {
   });
 
   // Filter only private (single) chats - non-archived and non-deleted
+  // Also deduplicate by participant - if there are multiple conversations with the same user,
+  // keep the one with the most recent message
   const privateConversations = React.useMemo(() => {
-    return conversations.filter((c) => c.type === 'Private' && !c.isArchived && !c.isDeleted);
-  }, [conversations]);
+    const filtered = conversations.filter((c) => c.type === 'Private' && !c.isArchived && !c.isDeleted);
+
+    // Deduplicate by other participant (for private chats, keep only one conversation per user)
+    const participantMap = new Map<string, Conversation>();
+    filtered.forEach(conv => {
+      const otherParticipant = conv.participants.find(p => p.userId !== userId);
+      if (otherParticipant) {
+        const key = otherParticipant.userId;
+        const existing = participantMap.get(key);
+
+        if (!existing) {
+          participantMap.set(key, conv);
+        } else {
+          // Keep the conversation with the most recent message, or the one that has a message
+          const existingTime = existing.lastMessageAt
+            ? new Date(existing.lastMessageAt).getTime()
+            : (existing.createdAt ? new Date(existing.createdAt).getTime() : 0);
+          const currentTime = conv.lastMessageAt
+            ? new Date(conv.lastMessageAt).getTime()
+            : (conv.createdAt ? new Date(conv.createdAt).getTime() : 0);
+
+          // Prefer conversation with lastMessage, then by most recent time
+          if (!existing.lastMessage && conv.lastMessage) {
+            participantMap.set(key, conv);
+          } else if (existing.lastMessage && !conv.lastMessage) {
+            // Keep existing
+          } else if (currentTime > existingTime) {
+            participantMap.set(key, conv);
+          }
+
+          if (__DEV__) {
+            console.warn(`[ChatsScreen] Duplicate conversations found for participant ${key}, keeping most recent`);
+          }
+        }
+      } else {
+        // No other participant found (shouldn't happen for private chats)
+        // Keep based on conversation ID to avoid losing data
+        if (!participantMap.has(conv.id)) {
+          participantMap.set(conv.id, conv);
+        }
+      }
+    });
+
+    return Array.from(participantMap.values());
+  }, [conversations, userId]);
 
   // Count archived conversations (only private ones)
   const archivedCount = React.useMemo(() => {

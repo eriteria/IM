@@ -1,10 +1,10 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, ActivityIndicator } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { format } from 'date-fns';
 import { Message } from '../types';
 import { useTheme } from '../context';
-import { FONTS, SPACING, BORDER_RADIUS } from '../utils/theme';
+import { FONTS, SPACING, BORDER_RADIUS, COLORS } from '../utils/theme';
 import AudioPlayer from './AudioPlayer';
 import { AppConfig } from '../config';
 
@@ -19,6 +19,38 @@ const getFullMediaUrl = (url: string | undefined): string => {
   // Remove /api suffix from apiBaseUrl since mediaUrl already starts with /api
   const baseUrl = AppConfig.apiUrl;
   return `${baseUrl}${url}`;
+};
+
+// Helper to check if a file is an image
+const isImageFile = (mimeType: string | undefined): boolean => {
+  if (!mimeType) return false;
+  return mimeType.startsWith('image/');
+};
+
+// Helper to check if a file is a PDF
+const isPdfFile = (mimeType: string | undefined, fileName: string | undefined): boolean => {
+  if (mimeType === 'application/pdf') return true;
+  if (fileName?.toLowerCase().endsWith('.pdf')) return true;
+  return false;
+};
+
+// Helper to get document icon based on file extension
+const getDocumentIcon = (fileName: string | undefined): string => {
+  if (!fileName) return 'file-document';
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  const iconMap: { [key: string]: string } = {
+    pdf: 'file-pdf-box',
+    doc: 'file-word',
+    docx: 'file-word',
+    xls: 'file-excel',
+    xlsx: 'file-excel',
+    ppt: 'file-powerpoint',
+    pptx: 'file-powerpoint',
+    txt: 'file-document-outline',
+    zip: 'folder-zip',
+    rar: 'folder-zip',
+  };
+  return iconMap[ext] || 'file-document';
 };
 
 interface MessageBubbleProps {
@@ -151,61 +183,160 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   };
 
   const renderMedia = () => {
-    if (!message.mediaUrl) return null;
+    // Check if we have a local URI (uploading) or server URL
+    const hasLocalUri = !!message.localMediaUri;
+    const hasMediaUrl = !!message.mediaUrl;
+    const isUploading = hasLocalUri && message.uploadProgress !== undefined && message.uploadProgress < 1;
+    const uploadProgress = message.uploadProgress ?? 0;
+
+    // For uploading messages, show preview with progress
+    if (!hasMediaUrl && !hasLocalUri) return null;
+
+    // Get the appropriate URI for preview
+    const previewUri = hasLocalUri ? message.localMediaUri : getFullMediaUrl(message.mediaThumbnailUrl || message.mediaUrl);
 
     switch (message.type) {
       case 'Image':
         return (
-          <TouchableOpacity onPress={onMediaPress} style={styles.mediaContainer}>
+          <TouchableOpacity
+            onPress={!isUploading ? onMediaPress : undefined}
+            activeOpacity={isUploading ? 1 : 0.7}
+            style={styles.mediaContainer}
+          >
             <Image
-              source={{ uri: getFullMediaUrl(message.mediaThumbnailUrl || message.mediaUrl) }}
+              source={{ uri: previewUri }}
               style={styles.imageMedia}
             />
+            {isUploading && (
+              <View style={styles.uploadOverlay}>
+                <View style={styles.uploadProgressContainer}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.uploadProgressText}>
+                    {Math.round(uploadProgress * 100)}%
+                  </Text>
+                </View>
+                <View style={styles.uploadProgressBar}>
+                  <View
+                    style={[
+                      styles.uploadProgressFill,
+                      { width: `${uploadProgress * 100}%` }
+                    ]}
+                  />
+                </View>
+              </View>
+            )}
           </TouchableOpacity>
         );
       case 'Video':
         return (
-          <TouchableOpacity onPress={onMediaPress} style={styles.mediaContainer}>
+          <TouchableOpacity
+            onPress={!isUploading ? onMediaPress : undefined}
+            activeOpacity={isUploading ? 1 : 0.7}
+            style={styles.mediaContainer}
+          >
             <Image
-              source={{ uri: getFullMediaUrl(message.mediaThumbnailUrl || message.mediaUrl) }}
+              source={{ uri: previewUri }}
               style={styles.imageMedia}
             />
-            <View style={styles.videoOverlay}>
-              <Icon name="play-circle" size={48} color="#FFFFFF" />
-            </View>
+            {isUploading ? (
+              <View style={styles.uploadOverlay}>
+                <View style={styles.uploadProgressContainer}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.uploadProgressText}>
+                    {Math.round(uploadProgress * 100)}%
+                  </Text>
+                </View>
+                <View style={styles.uploadProgressBar}>
+                  <View
+                    style={[
+                      styles.uploadProgressFill,
+                      { width: `${uploadProgress * 100}%` }
+                    ]}
+                  />
+                </View>
+              </View>
+            ) : (
+              <View style={styles.videoOverlay}>
+                <Icon name="play-circle" size={48} color="#FFFFFF" />
+              </View>
+            )}
           </TouchableOpacity>
         );
       case 'Audio':
         return (
           <View style={styles.audioWrapper}>
-            <AudioPlayer
-              uri={getFullMediaUrl(message.mediaUrl)}
-              duration={message.mediaDuration || 0}
-              isMine={isMine}
-            />
+            {isUploading ? (
+              <View style={styles.audioUploadContainer}>
+                <Icon name="microphone" size={24} color={colors.primary} />
+                <View style={styles.audioUploadProgress}>
+                  <Text style={[styles.audioUploadText, { color: colors.text }]}>
+                    Uploading voice note...
+                  </Text>
+                  <View style={[styles.audioProgressBar, { backgroundColor: colors.divider }]}>
+                    <View
+                      style={[
+                        styles.audioProgressFill,
+                        { width: `${uploadProgress * 100}%`, backgroundColor: colors.primary }
+                      ]}
+                    />
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <AudioPlayer
+                uri={getFullMediaUrl(message.mediaUrl)}
+                duration={message.mediaDuration || 0}
+                isMine={isMine}
+              />
+            )}
           </View>
         );
       case 'Document':
         return (
           <TouchableOpacity
-            onPress={onMediaPress}
+            onPress={!isUploading ? onMediaPress : undefined}
+            activeOpacity={isUploading ? 1 : 0.7}
             style={[
               styles.documentContainer,
               { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }
             ]}
           >
             <View style={[styles.documentIconContainer, { backgroundColor: colors.primary + '20' }]}>
-              <Icon name="file-document" size={28} color={colors.primary} />
+              <Icon
+                name={getDocumentIcon(message.content)}
+                size={28}
+                color={colors.primary}
+              />
             </View>
             <View style={styles.documentInfo}>
               <Text style={[styles.documentName, { color: colors.text }]} numberOfLines={1}>
                 {message.content || 'Document'}
               </Text>
-              <Text style={[styles.documentSize, { color: colors.textSecondary }]}>
-                {message.mediaSize ? formatFileSize(message.mediaSize) : ''}
-              </Text>
+              {isUploading ? (
+                <View style={styles.documentUploadProgress}>
+                  <Text style={[styles.documentUploadText, { color: colors.textSecondary }]}>
+                    Uploading {Math.round(uploadProgress * 100)}%
+                  </Text>
+                  <View style={[styles.documentProgressBar, { backgroundColor: colors.divider }]}>
+                    <View
+                      style={[
+                        styles.documentProgressFill,
+                        { width: `${uploadProgress * 100}%`, backgroundColor: colors.primary }
+                      ]}
+                    />
+                  </View>
+                </View>
+              ) : (
+                <Text style={[styles.documentSize, { color: colors.textSecondary }]}>
+                  {message.mediaSize ? formatFileSize(message.mediaSize) : ''}
+                </Text>
+              )}
             </View>
-            <Icon name="download" size={24} color={colors.primary} />
+            {isUploading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Icon name="eye" size={24} color={colors.primary} />
+            )}
           </TouchableOpacity>
         );
       default:
@@ -626,6 +757,77 @@ const styles = StyleSheet.create({
   },
   statusIcon: {
     marginLeft: SPACING.xs,
+  },
+  // Upload progress styles
+  uploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    padding: SPACING.md,
+  },
+  uploadProgressContainer: {
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  uploadProgressText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '600',
+    marginTop: SPACING.xs,
+  },
+  uploadProgressBar: {
+    width: '80%',
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  uploadProgressFill: {
+    height: '100%',
+    backgroundColor: COLORS.secondary,
+    borderRadius: 2,
+  },
+  // Audio upload styles
+  audioUploadContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+  },
+  audioUploadProgress: {
+    flex: 1,
+    marginLeft: SPACING.md,
+  },
+  audioUploadText: {
+    fontSize: FONTS.sizes.sm,
+    marginBottom: SPACING.xs,
+  },
+  audioProgressBar: {
+    height: 4,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  audioProgressFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  // Document upload styles
+  documentUploadProgress: {
+    flex: 1,
+  },
+  documentUploadText: {
+    fontSize: FONTS.sizes.xs,
+    marginBottom: 4,
+  },
+  documentProgressBar: {
+    height: 3,
+    borderRadius: 1.5,
+    overflow: 'hidden',
+  },
+  documentProgressFill: {
+    height: '100%',
+    borderRadius: 1.5,
   },
 });
 

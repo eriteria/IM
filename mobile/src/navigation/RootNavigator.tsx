@@ -53,7 +53,7 @@ export type RootStackParamList = {
 
   // Main
   MainTabs: undefined;
-  Chat: { conversationId: string; title?: string };
+  Chat: { conversationId: string; title?: string; openSearch?: boolean };
   GroupInfo: { conversationId: string };
   ContactInfo: { userId: string };
   NewChat: undefined;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
+import { InteractionManager } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import NetInfo from '@react-native-community/netinfo';
 import { conversationsApi, messagesApi } from '../services/api';
@@ -34,42 +35,47 @@ export const useMessages = (conversationId: string) => {
       return;
     }
 
-    const loadFromLocalDB = async () => {
-      try {
-        const localMessages = await messageDBService.getMessages(conversationId, 50, 0);
-        if (localMessages.length > 0) {
-          // Convert WatermelonDB messages to app Message format
-          const formattedMessages: Message[] = localMessages.map(msg => ({
-            id: msg.serverId,
-            conversationId: msg.conversationId,
-            senderId: msg.senderId,
-            senderName: '',
-            type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
-            content: msg.content || undefined,
-            mediaUrl: msg.mediaUrl || undefined,
-            mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
-            mediaDuration: msg.mediaDuration || undefined,
-            status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
-            isEdited: msg.isEdited,
-            isForwarded: !!msg.forwardedFromId,
-            isDeleted: msg.isDeleted,
-            replyToMessageId: msg.replyToId || undefined,
-            createdAt: new Date(msg.createdAt).toISOString(),
-            statuses: [],
-            reactions: [],
-          }));
+    // Defer local DB loading to after interactions complete
+    const handle = InteractionManager.runAfterInteractions(() => {
+      const loadFromLocalDB = async () => {
+        try {
+          const localMessages = await messageDBService.getMessages(conversationId, 50, 0);
+          if (localMessages.length > 0) {
+            // Convert WatermelonDB messages to app Message format
+            const formattedMessages: Message[] = localMessages.map(msg => ({
+              id: msg.serverId,
+              conversationId: msg.conversationId,
+              senderId: msg.senderId,
+              senderName: '',
+              type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
+              content: msg.content || undefined,
+              mediaUrl: msg.mediaUrl || undefined,
+              mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
+              mediaDuration: msg.mediaDuration || undefined,
+              status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
+              isEdited: msg.isEdited,
+              isForwarded: !!msg.forwardedFromId,
+              isDeleted: msg.isDeleted,
+              replyToMessageId: msg.replyToId || undefined,
+              createdAt: new Date(msg.createdAt).toISOString(),
+              statuses: [],
+              reactions: [],
+            }));
 
-          setMessages(conversationId, formattedMessages);
-          setLoadedFromCache(true);
+            setMessages(conversationId, formattedMessages);
+            setLoadedFromCache(true);
+          }
+          hasLoadedFromCache.current = true;
+        } catch (error) {
+          console.error('Error loading messages from local DB:', error);
+          hasLoadedFromCache.current = true;
         }
-        hasLoadedFromCache.current = true;
-      } catch (error) {
-        console.error('Error loading messages from local DB:', error);
-        hasLoadedFromCache.current = true;
-      }
-    };
+      };
 
-    loadFromLocalDB();
+      loadFromLocalDB();
+    });
+
+    return () => handle.cancel();
   }, [conversationId, conversationMessages.length, setMessages]);
 
   // Check network status

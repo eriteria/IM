@@ -95,6 +95,10 @@ export interface Message {
   originalCreatedAt?: string;
   // Reactions
   reactions?: MessageReaction[];
+  // Upload progress (0-1) for optimistic messages
+  uploadProgress?: number;
+  // Local file URI for preview before upload completes
+  localMediaUri?: string;
 }
 
 export interface MessageReaction {

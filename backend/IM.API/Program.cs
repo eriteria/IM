@@ -181,6 +181,7 @@ builder.Services.AddScoped<IContactService, ContactService>();
 builder.Services.AddScoped<IStatusService, StatusService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IFileService, FileService>();
+builder.Services.AddScoped<IDocumentWatermarkService, DocumentWatermarkService>();
 
 // Background Services
 builder.Services.AddHostedService<MessageCleanupService>();

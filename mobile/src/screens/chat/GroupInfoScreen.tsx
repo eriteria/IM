@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,11 +8,13 @@ import {
   Alert,
   TextInput,
   FlatList,
+  Modal,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { launchImageLibrary } from 'react-native-image-picker';
 import Avatar from '../../components/Avatar';
 import { conversationsApi } from '../../services/api';
 import { useChatStore } from '../../stores/chatStore';
@@ -26,7 +28,7 @@ type GroupInfoRouteProp = RouteProp<RootStackParamList, 'GroupInfo'>;
 type GroupInfoNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 const GroupInfoScreen: React.FC = () => {
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   const route = useRoute<GroupInfoRouteProp>();
@@ -36,7 +38,8 @@ const GroupInfoScreen: React.FC = () => {
   const { userId } = useAuthStore();
   const { getConversation } = useChatStore();
 
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [groupDescription, setGroupDescription] = useState('');
 
@@ -51,18 +54,55 @@ const GroupInfoScreen: React.FC = () => {
   });
 
   const currentUserParticipant = participants?.find((p) => p.userId === userId);
-  const isAdmin = currentUserParticipant?.role === 'Admin';
+  // Owner and Admin roles both have admin privileges
+  const isAdmin = currentUserParticipant?.role === 'Admin' || currentUserParticipant?.role === 'Owner';
 
-  const updateMutation = useMutation({
+  // Helper to check if a participant has admin privileges
+  const hasAdminRole = (role?: string) => role === 'Admin' || role === 'Owner';
+
+  // Sort participants to show owners first, then admins, then members
+  const sortedParticipants = useMemo(() => {
+    if (!participants) return [];
+    return [...participants].sort((a, b) => {
+      // Owner comes first
+      if (a.role === 'Owner' && b.role !== 'Owner') return -1;
+      if (a.role !== 'Owner' && b.role === 'Owner') return 1;
+      // Then Admin
+      if (hasAdminRole(a.role) && !hasAdminRole(b.role)) return -1;
+      if (!hasAdminRole(a.role) && hasAdminRole(b.role)) return 1;
+      return 0;
+    });
+  }, [participants]);
+
+  const updateNameMutation = useMutation({
     mutationFn: async () => {
       await conversationsApi.update(conversationId, {
         name: groupName,
+      });
+    },
+    onSuccess: () => {
+      setIsEditingName(false);
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      Alert.alert('Success', 'Group name updated');
+    },
+    onError: () => {
+      Alert.alert('Error', 'Failed to update group name');
+    },
+  });
+
+  const updateDescriptionMutation = useMutation({
+    mutationFn: async () => {
+      await conversationsApi.update(conversationId, {
         description: groupDescription,
       });
     },
     onSuccess: () => {
-      setIsEditing(false);
+      setIsEditingDescription(false);
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      Alert.alert('Success', 'Group description updated');
+    },
+    onError: () => {
+      Alert.alert('Error', 'Failed to update group description');
     },
   });
 
@@ -74,6 +114,37 @@ const GroupInfoScreen: React.FC = () => {
       navigation.popToTop();
     },
   });
+
+  const handleChangeGroupPicture = useCallback(async () => {
+    if (!isAdmin) {
+      Alert.alert('Permission Denied', 'Only admins can change the group picture');
+      return;
+    }
+
+    const result = await launchImageLibrary({
+      mediaType: 'photo',
+      quality: 0.8,
+      maxWidth: 500,
+      maxHeight: 500,
+    });
+
+    if (result.assets && result.assets[0]) {
+      try {
+        const formData = new FormData();
+        formData.append('file', {
+          uri: result.assets[0].uri,
+          type: result.assets[0].type || 'image/jpeg',
+          name: result.assets[0].fileName || 'group-picture.jpg',
+        } as any);
+
+        await conversationsApi.updateGroupPicture(conversationId, formData);
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        Alert.alert('Success', 'Group picture updated');
+      } catch (error) {
+        Alert.alert('Error', 'Failed to update group picture');
+      }
+    }
+  }, [isAdmin, conversationId, queryClient]);
 
   const handleLeaveGroup = () => {
     Alert.alert(
@@ -112,65 +183,116 @@ const GroupInfoScreen: React.FC = () => {
     );
   };
 
-  const handleMakeAdmin = async (participantUserId: string) => {
+  const handleMakeAdmin = async (participantUserId: string, currentRole: string) => {
     try {
-      await conversationsApi.updateParticipantRole(conversationId, participantUserId, 'Admin');
+      const newRole = currentRole === 'Admin' ? 'Member' : 'Admin';
+      await conversationsApi.updateParticipantRole(conversationId, participantUserId, newRole);
       queryClient.invalidateQueries({ queryKey: ['participants', conversationId] });
+      Alert.alert('Success', `Role updated to ${newRole}`);
     } catch (error) {
       Alert.alert('Error', 'Failed to update role');
     }
   };
 
-  const renderParticipant = ({ item }: { item: Participant }) => (
-    <TouchableOpacity
-      style={styles.participantItem}
-      onPress={() => {
-        if (item.userId !== userId) {
-          navigation.navigate('ContactInfo', { userId: item.userId });
-        }
-      }}
-      onLongPress={() => {
-        if (isAdmin && item.userId !== userId) {
-          Alert.alert(
-            item.displayName || item.fullName || 'Participant',
-            'Choose an action',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: item.role === 'Admin' ? 'Remove Admin' : 'Make Admin',
-                onPress: () => handleMakeAdmin(item.userId),
-              },
-              {
-                text: 'Remove from Group',
-                style: 'destructive',
-                onPress: () => handleRemoveParticipant(item.userId, item.displayName || item.fullName || ''),
-              },
-            ]
-          );
-        }
-      }}
-    >
-      <Avatar
-        uri={item.profilePictureUrl}
-        name={item.displayName || item.fullName || ''}
-        size={50}
-        isOnline={item.isOnline}
-      />
-      <View style={styles.participantInfo}>
-        <Text style={styles.participantName}>
-          {item.userId === userId ? 'You' : item.displayName || item.fullName}
-        </Text>
-        {item.role === 'Admin' && (
-          <Text style={styles.adminBadge}>Admin</Text>
+  const handleMediaGallery = useCallback(() => {
+    navigation.navigate('MediaGallery', { conversationId });
+  }, [navigation, conversationId]);
+
+  const renderParticipant = ({ item }: { item: Participant }) => {
+    const isItemOwner = item.role === 'Owner';
+    const isItemAdmin = hasAdminRole(item.role);
+    const isCurrentUser = item.userId === userId;
+
+    // Get badge text based on role
+    const getRoleBadge = () => {
+      if (item.role === 'Owner') return 'Owner';
+      if (item.role === 'Admin') return 'Admin';
+      return null;
+    };
+
+    const roleBadge = getRoleBadge();
+
+    return (
+      <TouchableOpacity
+        style={styles.participantItem}
+        onPress={() => {
+          if (!isCurrentUser) {
+            navigation.navigate('ContactInfo', { userId: item.userId });
+          }
+        }}
+        onLongPress={() => {
+          // Only admin/owner can manage others, and owner cannot be removed/demoted
+          if (isAdmin && !isCurrentUser && !isItemOwner) {
+            Alert.alert(
+              item.displayName || item.fullName || 'Participant',
+              'Choose an action',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: item.role === 'Admin' ? 'Remove Admin' : 'Make Admin',
+                  onPress: () => handleMakeAdmin(item.userId, item.role || 'Member'),
+                },
+                {
+                  text: 'Remove from Group',
+                  style: 'destructive',
+                  onPress: () => handleRemoveParticipant(item.userId, item.displayName || item.fullName || ''),
+                },
+              ]
+            );
+          }
+        }}
+      >
+        <Avatar
+          uri={item.profilePictureUrl}
+          name={item.displayName || item.fullName || ''}
+          size={50}
+          isOnline={item.isOnline}
+        />
+        <View style={styles.participantInfo}>
+          <View style={styles.participantNameRow}>
+            <Text style={styles.participantName}>
+              {isCurrentUser ? 'You' : item.displayName || item.fullName}
+            </Text>
+            {roleBadge && (
+              <View style={[
+                styles.adminBadgeContainer,
+                isItemOwner && styles.ownerBadgeContainer
+              ]}>
+                <Icon
+                  name={isItemOwner ? "crown" : "shield-account"}
+                  size={14}
+                  color={isItemOwner ? colors.warning : colors.secondary}
+                />
+                <Text style={[
+                  styles.adminBadge,
+                  isItemOwner && styles.ownerBadge
+                ]}>
+                  {roleBadge}
+                </Text>
+              </View>
+            )}
+          </View>
+          {item.about && (
+            <Text style={styles.participantAbout} numberOfLines={1}>
+              {item.about}
+            </Text>
+          )}
+        </View>
+        {isAdmin && !isCurrentUser && !isItemOwner && (
+          <Icon name="chevron-right" size={24} color={colors.textMuted} />
         )}
-      </View>
-    </TouchableOpacity>
-  );
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.avatarContainer}>
+        <TouchableOpacity
+          style={styles.avatarContainer}
+          onPress={handleChangeGroupPicture}
+          disabled={!isAdmin}
+        >
           <Avatar
             uri={conversation?.iconUrl}
             name={conversation?.name || 'Group'}
@@ -183,67 +305,90 @@ const GroupInfoScreen: React.FC = () => {
           )}
         </TouchableOpacity>
 
-        {isEditing ? (
-          <View style={styles.editContainer}>
-            <TextInput
-              style={styles.editInput}
-              value={groupName}
-              onChangeText={setGroupName}
-              placeholder="Group name"
-              placeholderTextColor={colors.textMuted}
-            />
-            <TextInput
-              style={[styles.editInput, styles.descInput]}
-              value={groupDescription}
-              onChangeText={setGroupDescription}
-              placeholder="Description"
-              placeholderTextColor={colors.textMuted}
-              multiline
-            />
-            <View style={styles.editButtons}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => setIsEditing(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.saveButton}
-                onPress={() => updateMutation.mutate()}
-              >
-                <Text style={styles.saveButtonText}>Save</Text>
-              </TouchableOpacity>
+        {/* Group Name */}
+        <View style={styles.nameContainer}>
+          {isEditingName ? (
+            <View style={styles.editNameContainer}>
+              <TextInput
+                style={styles.editNameInput}
+                value={groupName}
+                onChangeText={setGroupName}
+                placeholder="Group name"
+                placeholderTextColor={colors.textMuted}
+                autoFocus
+              />
+              <View style={styles.editNameButtons}>
+                <TouchableOpacity
+                  style={styles.editNameCancel}
+                  onPress={() => setIsEditingName(false)}
+                >
+                  <Icon name="close" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.editNameSave}
+                  onPress={() => updateNameMutation.mutate()}
+                >
+                  <Icon name="check" size={24} color={colors.secondary} />
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-        ) : (
-          <View style={styles.infoContainer}>
-            <Text style={styles.groupName}>{conversation?.name}</Text>
-            <Text style={styles.groupDesc}>
-              {conversation?.description || 'No description'}
-            </Text>
-            <Text style={styles.memberCount}>
-              {participants?.length} participants
-            </Text>
-            {isAdmin && (
-              <TouchableOpacity
-                style={styles.editButton}
-                onPress={() => {
+          ) : (
+            <TouchableOpacity
+              style={styles.nameRow}
+              onPress={() => {
+                if (isAdmin) {
                   setGroupName(conversation?.name || '');
-                  setGroupDescription(conversation?.description || '');
-                  setIsEditing(true);
-                }}
-              >
-                <Icon name="pencil" size={16} color={colors.secondary} />
-                <Text style={styles.editButtonText}>Edit</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
+                  setIsEditingName(true);
+                }
+              }}
+              disabled={!isAdmin}
+            >
+              <Text style={styles.groupName}>{conversation?.name}</Text>
+              {isAdmin && (
+                <Icon name="pencil" size={18} color={colors.textMuted} style={styles.editIcon} />
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <Text style={styles.memberCount}>
+          {participants?.length} participants
+        </Text>
       </View>
 
+      {/* Description Section */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Participants</Text>
+          <Text style={styles.sectionTitle}>Description</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setGroupDescription(conversation?.description || '');
+              setIsEditingDescription(true);
+            }}
+          >
+            <Icon name="pencil" size={20} color={colors.secondary} />
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.descriptionText}>
+          {conversation?.description || 'No description. Tap the pencil to add one.'}
+        </Text>
+      </View>
+
+      {/* Media Section */}
+      <View style={styles.section}>
+        <TouchableOpacity style={styles.menuItem} onPress={handleMediaGallery}>
+          <Icon name="image-multiple" size={24} color={colors.textSecondary} />
+          <Text style={styles.menuLabel}>Media, links, and docs</Text>
+          <Icon name="chevron-right" size={24} color={colors.textMuted} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Participants Section */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>
+            {participants?.length} Participants
+          </Text>
           {isAdmin && (
             <TouchableOpacity
               style={styles.addButton}
@@ -258,13 +403,14 @@ const GroupInfoScreen: React.FC = () => {
         </View>
 
         <FlatList
-          data={participants}
+          data={sortedParticipants}
           renderItem={renderParticipant}
           keyExtractor={(item) => item.userId}
           scrollEnabled={false}
         />
       </View>
 
+      {/* Actions Section */}
       <View style={styles.actionsSection}>
         <TouchableOpacity
           style={styles.actionButton}
@@ -274,6 +420,44 @@ const GroupInfoScreen: React.FC = () => {
           <Text style={styles.leaveText}>Leave Group</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Edit Description Modal */}
+      <Modal
+        visible={isEditingDescription}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsEditingDescription(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Edit Description</Text>
+            <TextInput
+              style={styles.descriptionInput}
+              value={groupDescription}
+              onChangeText={setGroupDescription}
+              placeholder="Enter group description..."
+              placeholderTextColor={colors.textMuted}
+              multiline
+              numberOfLines={4}
+              autoFocus
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setIsEditingDescription(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveButton}
+                onPress={() => updateDescriptionMutation.mutate()}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -306,80 +490,49 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     borderWidth: 3,
     borderColor: colors.surface,
   },
-  infoContainer: {
+  nameContainer: {
+    alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  nameRow: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
   groupName: {
     fontSize: FONTS.sizes.xxl,
     fontWeight: 'bold',
     color: colors.text,
-    marginBottom: SPACING.xs,
   },
-  groupDesc: {
-    fontSize: FONTS.sizes.md,
-    color: colors.textSecondary,
+  editIcon: {
+    marginLeft: SPACING.sm,
+  },
+  editNameContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  editNameInput: {
+    fontSize: FONTS.sizes.xl,
+    fontWeight: 'bold',
+    color: colors.text,
+    borderBottomWidth: 2,
+    borderBottomColor: colors.secondary,
+    paddingVertical: SPACING.xs,
+    minWidth: 150,
     textAlign: 'center',
-    marginBottom: SPACING.sm,
+  },
+  editNameButtons: {
+    flexDirection: 'row',
+    marginLeft: SPACING.sm,
+  },
+  editNameCancel: {
+    padding: SPACING.xs,
+  },
+  editNameSave: {
+    padding: SPACING.xs,
   },
   memberCount: {
     fontSize: FONTS.sizes.sm,
     color: colors.textMuted,
-    marginBottom: SPACING.md,
-  },
-  editButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: SPACING.xs,
-  },
-  editButtonText: {
-    fontSize: FONTS.sizes.sm,
-    color: colors.secondary,
-    marginLeft: SPACING.xs,
-    fontWeight: '500',
-  },
-  editContainer: {
-    width: '100%',
-    paddingHorizontal: SPACING.lg,
-  },
-  editInput: {
-    fontSize: FONTS.sizes.lg,
-    color: colors.text,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.secondary,
-    paddingVertical: SPACING.sm,
-    marginBottom: SPACING.md,
-    textAlign: 'center',
-  },
-  descInput: {
-    minHeight: 60,
-  },
-  editButtons: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: SPACING.md,
-    marginTop: SPACING.md,
-  },
-  cancelButton: {
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.lg,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: colors.background,
-  },
-  cancelButtonText: {
-    fontSize: FONTS.sizes.md,
-    color: colors.textSecondary,
-    fontWeight: '500',
-  },
-  saveButton: {
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.lg,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: colors.secondary,
-  },
-  saveButtonText: {
-    fontSize: FONTS.sizes.md,
-    color: colors.textInverse,
-    fontWeight: '500',
   },
   section: {
     backgroundColor: colors.surface,
@@ -394,10 +547,27 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     borderBottomColor: colors.divider,
   },
   sectionTitle: {
-    fontSize: FONTS.sizes.md,
+    fontSize: FONTS.sizes.sm,
     fontWeight: '600',
     color: colors.textSecondary,
     textTransform: 'uppercase',
+  },
+  descriptionText: {
+    fontSize: FONTS.sizes.md,
+    color: colors.text,
+    padding: SPACING.lg,
+    paddingTop: SPACING.md,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: FONTS.sizes.md,
+    color: colors.text,
+    marginLeft: SPACING.lg,
   },
   addButton: {
     padding: SPACING.xs,
@@ -413,16 +583,40 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     flex: 1,
     marginLeft: SPACING.md,
   },
+  participantNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   participantName: {
     fontSize: FONTS.sizes.lg,
     fontWeight: '500',
     color: colors.text,
   },
+  adminBadgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.secondary + '20',
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: SPACING.sm,
+  },
+  ownerBadgeContainer: {
+    backgroundColor: colors.warning + '20',
+  },
   adminBadge: {
     fontSize: FONTS.sizes.xs,
     color: colors.secondary,
     fontWeight: '600',
-    marginTop: SPACING.xs,
+    marginLeft: 4,
+  },
+  ownerBadge: {
+    color: colors.warning,
+  },
+  participantAbout: {
+    fontSize: FONTS.sizes.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
   actionsSection: {
     backgroundColor: colors.surface,
@@ -437,6 +631,61 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: FONTS.sizes.lg,
     color: colors.error,
     marginLeft: SPACING.md,
+    fontWeight: '500',
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    width: '90%',
+    maxWidth: 400,
+    padding: SPACING.lg,
+  },
+  modalTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: SPACING.lg,
+  },
+  descriptionInput: {
+    fontSize: FONTS.sizes.md,
+    color: colors.text,
+    backgroundColor: colors.background,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: SPACING.lg,
+    gap: SPACING.md,
+  },
+  modalCancelButton: {
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+  },
+  modalCancelText: {
+    fontSize: FONTS.sizes.md,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  modalSaveButton: {
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    backgroundColor: colors.secondary,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  modalSaveText: {
+    fontSize: FONTS.sizes.md,
+    color: colors.textInverse,
     fontWeight: '500',
   },
 });

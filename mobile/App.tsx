@@ -161,6 +161,49 @@ const AppContent: React.FC = () => {
   const { colors, isDark } = useTheme();
   const navigationRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
   const appState = useRef(AppState.currentState);
+  // Track navigated call IDs to prevent duplicate navigation
+  const navigatedCallIds = useRef<Set<string>>(new Set());
+
+  // Helper to check if we're already on a specific screen
+  const isOnScreen = (screenName: string): boolean => {
+    const state = navigationRef.current?.getRootState();
+    if (!state || !state.routes || state.routes.length === 0) return false;
+    return state.routes[state.index]?.name === screenName;
+  };
+
+  // Helper to safely navigate to IncomingCall without duplicates
+  const navigateToIncomingCallSafe = (params: {
+    callId: string;
+    callerName: string;
+    callerAvatar?: string;
+    callType: 'Voice' | 'Video';
+    conversationId: string;
+  }) => {
+    // Skip if already on IncomingCall screen
+    if (isOnScreen('IncomingCall')) {
+      console.log('App: Already on IncomingCall screen, skipping navigation');
+      return;
+    }
+    // Skip if we've already navigated for this call
+    if (navigatedCallIds.current.has(params.callId)) {
+      console.log('App: Already navigated for this call ID, skipping');
+      return;
+    }
+    navigatedCallIds.current.add(params.callId);
+    console.log('App: Navigating to IncomingCall screen for call:', params.callId);
+    navigationRef.current?.navigate('IncomingCall', params);
+  };
+
+  // Clear navigated call IDs when incoming call is cleared
+  useEffect(() => {
+    const unsubscribe = useCallStore.subscribe((state, prevState) => {
+      if (prevState.incomingCall && !state.incomingCall) {
+        // Incoming call was cleared, reset navigation tracking
+        navigatedCallIds.current.clear();
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   // Request all permissions on app launch (even before authentication)
   useEffect(() => {
@@ -296,7 +339,7 @@ const AppContent: React.FC = () => {
       } else if (event.action === 'incoming' && event.callId) {
         // App opened from native notification - show incoming call screen
         console.log('Showing incoming call screen from native notification');
-        navigationRef.current?.navigate('IncomingCall', {
+        navigateToIncomingCallSafe({
           callId: event.callId,
           callerName: event.callerName || 'Unknown',
           callerAvatar: undefined,
@@ -331,8 +374,8 @@ const AppContent: React.FC = () => {
       console.log('Notification pressed:', data);
 
       if (data.type === 'call' && data.callId && data.conversationId) {
-        // Navigate to incoming call screen
-        navigationRef.current?.navigate('IncomingCall', {
+        // Navigate to incoming call screen using safe navigation
+        navigateToIncomingCallSafe({
           callId: data.callId,
           callerName: data.callerName || data.title,
           callerAvatar: data.imageUrl,

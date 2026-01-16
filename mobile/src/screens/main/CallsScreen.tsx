@@ -80,13 +80,26 @@ const CallsScreen: React.FC = () => {
     },
   });
 
+  // Helper function to check if a call is missed
+  const isCallMissed = (call: Call): boolean => {
+    const isOutgoing = call.initiatorId === userId;
+    const callStatusMissed = call.status === 'Missed' || call.status === 'Declined';
+    const currentUserParticipant = call.participants.find((p) => p.userId === userId);
+    const participantMissed = currentUserParticipant?.status === 'Missed' || currentUserParticipant?.status === 'Declined';
+    const otherParticipants = call.participants.filter((p) => p.userId !== userId);
+    const allOthersMissed = isOutgoing && otherParticipants.length > 0 &&
+      otherParticipants.every((p) => p.status === 'Missed' || p.status === 'Declined');
+
+    return callStatusMissed || participantMissed || allOthersMissed;
+  };
+
   // Filtered and sectioned calls
   const sectionedCalls = React.useMemo(() => {
     if (!calls) return [];
 
     let filteredCalls = calls;
     if (activeFilter === 'missed') {
-      filteredCalls = calls.filter((c) => c.status === 'Missed' || c.status === 'Declined');
+      filteredCalls = calls.filter((c) => isCallMissed(c));
     }
 
     // Add section headers based on date
@@ -136,9 +149,29 @@ const CallsScreen: React.FC = () => {
 
   const getCallInfo = (call: Call): { icon: string; color: string; label: string } => {
     const isOutgoing = call.initiatorId === userId;
-    const isMissed = call.status === 'Missed' || call.status === 'Declined';
+
+    // Check both call status AND participant status for missed calls
+    // When a call ends without being answered:
+    // - call.status = 'Ended'
+    // - participant.status = 'Missed' (for unanswered participants)
+    const callStatusMissed = call.status === 'Missed' || call.status === 'Declined';
+
+    // Also check if the current user's participant status is Missed
+    const currentUserParticipant = call.participants.find((p) => p.userId === userId);
+    const participantMissed = currentUserParticipant?.status === 'Missed' || currentUserParticipant?.status === 'Declined';
+
+    // For outgoing calls, check if all other participants missed/declined
+    const otherParticipants = call.participants.filter((p) => p.userId !== userId);
+    const allOthersMissed = isOutgoing && otherParticipants.length > 0 &&
+      otherParticipants.every((p) => p.status === 'Missed' || p.status === 'Declined');
+
+    const isMissed = callStatusMissed || participantMissed || allOthersMissed;
 
     if (isMissed) {
+      // For outgoing calls where recipients missed, show as "No answer"
+      if (isOutgoing && allOthersMissed && !participantMissed) {
+        return { icon: 'phone-missed', color: colors.error, label: 'No Answer' };
+      }
       return { icon: 'phone-missed', color: colors.error, label: 'Missed' };
     }
     if (isOutgoing) {
@@ -236,7 +269,7 @@ const CallsScreen: React.FC = () => {
   const renderCallItem = ({ item }: { item: CallWithSection }) => {
     const displayInfo = getCallDisplayInfo(item);
     const callInfo = getCallInfo(item);
-    const isMissed = item.status === 'Missed' || item.status === 'Declined';
+    const isMissed = isCallMissed(item);
     const isVideo = item.type === 'Video';
     const isGroup = isGroupCall(item);
     const duration = formatDuration(item.duration);

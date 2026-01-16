@@ -37,6 +37,9 @@ class CallNotificationService : FirebaseMessagingService() {
         private var ringtoneHandler: android.os.Handler? = null
         private var ringtoneTimeoutRunnable: Runnable? = null
         private var currentCallId: String? = null
+        private var currentCallerName: String? = null
+        private var currentCallType: String? = null
+        private var currentConversationId: String? = null
         private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
         fun stopRingtone() {
@@ -46,6 +49,9 @@ class CallNotificationService : FirebaseMessagingService() {
                 ringtoneTimeoutRunnable = null
                 ringtoneHandler = null
                 currentCallId = null
+                currentCallerName = null
+                currentCallType = null
+                currentConversationId = null
 
                 ringtone?.stop()
                 ringtone = null
@@ -73,8 +79,14 @@ class CallNotificationService : FirebaseMessagingService() {
         fun endCall(context: Context, callId: String?) {
             Log.d(TAG, "endCall called for callId: $callId, currentCallId: $currentCallId")
 
-            // Stop ringtone if this is the current call
-            if (callId == null || callId == currentCallId) {
+            // Stop ringtone if this is the current call or if we should end any call
+            // Use case-insensitive comparison for GUIDs
+            val shouldEnd = callId == null ||
+                           currentCallId == null ||
+                           callId.equals(currentCallId, ignoreCase = true)
+
+            if (shouldEnd) {
+                Log.d(TAG, "Ending call - stopping ringtone and closing UI")
                 stopRingtone()
 
                 // Cancel notification
@@ -93,6 +105,8 @@ class CallNotificationService : FirebaseMessagingService() {
                 }
                 context.sendBroadcast(closeIntent)
                 Log.d(TAG, "Broadcast sent to close IncomingCallActivity")
+            } else {
+                Log.d(TAG, "Not ending call - callId mismatch: $callId != $currentCallId")
             }
         }
     }
@@ -136,7 +150,7 @@ class CallNotificationService : FirebaseMessagingService() {
                             Log.d(TAG, "App is in foreground, letting React Native handle the call")
                             showCallNotification(callId, callerName, callType, callerId, conversationId)
                             // Also start ringtone as backup in case React Native doesn't handle it
-                            startRingtone(callId, callType)
+                            startRingtone(callId, callType, callerName, conversationId)
                             return@post
                         }
 
@@ -147,7 +161,7 @@ class CallNotificationService : FirebaseMessagingService() {
                         wakeDevice()
 
                         // Start playing ringtone (use default phone ringtone for video calls)
-                        startRingtone(callId, callType)
+                        startRingtone(callId, callType, callerName, conversationId)
 
                         // Strategy for launching the incoming call screen:
                         // 1. If overlay permission granted -> Use overlay (works on ALL Android versions, even 16+)
@@ -212,8 +226,17 @@ class CallNotificationService : FirebaseMessagingService() {
             "call_ended" -> {
                 Log.d(TAG, "Handling call ended notification")
                 val callId = data["callId"]
+                val callerName = data["callerName"]
+                val callType = data["callType"]
+                val conversationId = data["conversationId"]
                 mainHandler.post {
+                    // First end the call (stop ringtone, close UI)
                     endCall(applicationContext, callId)
+
+                    // Show missed call notification if caller info is available
+                    if (!callerName.isNullOrEmpty()) {
+                        showMissedCallNotification(callerName, callType ?: "Voice", conversationId)
+                    }
                 }
             }
             "ptt" -> {
@@ -301,10 +324,13 @@ class CallNotificationService : FirebaseMessagingService() {
         }
     }
 
-    private fun startRingtone(callId: String, callType: String = "Voice") {
+    private fun startRingtone(callId: String, callType: String = "Voice", callerName: String? = null, conversationId: String? = null) {
         try {
-            // Store current call ID
+            // Store current call info
             currentCallId = callId
+            currentCallerName = callerName
+            currentCallType = callType
+            currentConversationId = conversationId
 
             // Use default device ringtone for all call types (voice and video)
             val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -324,7 +350,7 @@ class CallNotificationService : FirebaseMessagingService() {
             audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
 
             ringtone?.play()
-            Log.d(TAG, "Ringtone started playing for call: $callId (type: $callType)")
+            Log.d(TAG, "Ringtone started playing for call: $callId (type: $callType) from $callerName")
 
             // Start vibration
             startVibration()
@@ -332,11 +358,15 @@ class CallNotificationService : FirebaseMessagingService() {
             // Set up timeout to stop ringtone after 60 seconds
             ringtoneHandler = android.os.Handler(android.os.Looper.getMainLooper())
             ringtoneTimeoutRunnable = Runnable {
-                Log.d(TAG, "Ringtone timeout reached for call: $callId")
-                stopRingtone()
-                // Cancel the notification too
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.cancel(CALL_NOTIFICATION_ID)
+                Log.d(TAG, "Ringtone timeout reached for call: $callId - showing missed call from $currentCallerName")
+                // Store caller info before endCall clears it
+                val savedCallerName = currentCallerName ?: "Unknown"
+                val savedCallType = currentCallType ?: "Voice"
+                val savedConversationId = currentConversationId
+                // Use endCall to properly clean up everything including the activity
+                endCall(applicationContext, callId)
+                // Show missed call notification with saved info
+                showMissedCallNotification(savedCallerName, savedCallType, savedConversationId)
             }
             ringtoneHandler?.postDelayed(ringtoneTimeoutRunnable!!, RINGTONE_TIMEOUT_MS)
 
@@ -588,6 +618,67 @@ class CallNotificationService : FirebaseMessagingService() {
         val notification = notificationBuilder.build()
         notificationManager.notify(PTT_NOTIFICATION_ID, notification)
         Log.d(TAG, "PTT notification displayed for $senderName")
+    }
+
+    private fun showMissedCallNotification(callerName: String, callType: String, conversationId: String?) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val missedCallChannelId = "missed_calls"
+
+        // Create missed call notification channel for Android O+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val existingChannel = notificationManager.getNotificationChannel(missedCallChannelId)
+            if (existingChannel == null) {
+                val channel = NotificationChannel(
+                    missedCallChannelId,
+                    "Missed Calls",
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+                channel.description = "Missed call notifications"
+                channel.lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                channel.enableVibration(true)
+                channel.vibrationPattern = longArrayOf(0, 200, 100, 200)
+                notificationManager.createNotificationChannel(channel)
+                Log.d(TAG, "Missed call notification channel created")
+            }
+        }
+
+        // Build the notification
+        val missedCallText = if (callType.equals("Video", ignoreCase = true)) {
+            "Missed video call"
+        } else {
+            "Missed voice call"
+        }
+
+        // Create intent to open the app
+        val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            if (!conversationId.isNullOrEmpty()) {
+                putExtra("navigateTo", "chat")
+                putExtra("conversationId", conversationId)
+            }
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            4,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notificationBuilder = NotificationCompat.Builder(this, missedCallChannelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(callerName)
+            .setContentText(missedCallText)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        // Use a unique notification ID based on timestamp to allow multiple missed calls
+        val notificationId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+        notificationManager.notify(notificationId, notificationBuilder.build())
+        Log.d(TAG, "Missed call notification displayed for $callerName")
     }
 
     override fun onNewToken(token: String) {

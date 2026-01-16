@@ -11,12 +11,18 @@ public class MessageService : IMessageService
 {
     private readonly ApplicationDbContext _context;
     private readonly IEncryptionService _encryptionService;
+    private readonly IFileService _fileService;
     private readonly ILogger<MessageService> _logger;
 
-    public MessageService(ApplicationDbContext context, IEncryptionService encryptionService, ILogger<MessageService> logger)
+    public MessageService(
+        ApplicationDbContext context,
+        IEncryptionService encryptionService,
+        IFileService fileService,
+        ILogger<MessageService> logger)
     {
         _context = context;
         _encryptionService = encryptionService;
+        _fileService = fileService;
         _logger = logger;
     }
 
@@ -461,6 +467,27 @@ public class MessageService : IMessageService
             expiresAt = DateTime.UtcNow.AddHours((int)toConversation.DefaultMessageExpiry);
         }
 
+        // For PDF documents, create a new copy with forwarder watermark
+        var forwardOrder = originalMessage.ForwardCount + 1;
+        var mediaUrlToUse = originalMessage.MediaUrl;
+
+        if (originalMessage.Type == MessageType.Document && !string.IsNullOrEmpty(originalMessage.MediaUrl))
+        {
+            var forwarderName = forwarder.DisplayName ?? forwarder.NominalRoll?.FullName;
+            var watermarkedUrl = await _fileService.CreateForwardedCopyWithWatermarkAsync(
+                originalMessage.MediaUrl,
+                forwarderId,
+                forwarderServiceNumber,
+                forwarderName,
+                forwardOrder);
+
+            if (!string.IsNullOrEmpty(watermarkedUrl))
+            {
+                mediaUrlToUse = watermarkedUrl;
+                _logger.LogInformation("Created watermarked copy for forwarded document: {Url}", watermarkedUrl);
+            }
+        }
+
         // Create forwarded message
         var forwardedMessage = new Message
         {
@@ -468,7 +495,7 @@ public class MessageService : IMessageService
             SenderId = forwarderId,
             Type = originalMessage.Type,
             Content = encryptedContent,
-            MediaUrl = originalMessage.MediaUrl,
+            MediaUrl = mediaUrlToUse,
             MediaThumbnailUrl = originalMessage.MediaThumbnailUrl,
             MediaMimeType = originalMessage.MediaMimeType,
             MediaSize = originalMessage.MediaSize,
@@ -482,7 +509,7 @@ public class MessageService : IMessageService
             OriginalSenderServiceNumber = originalSenderServiceNumber,
             MediaOriginatorServiceNumber = originalMessage.MediaOriginatorServiceNumber ?? originalSenderServiceNumber,
             OriginalMessageId = rootOriginalMessageId,
-            ForwardCount = originalMessage.ForwardCount + 1,
+            ForwardCount = forwardOrder,
             OriginalCreatedAt = originalMessage.OriginalCreatedAt ?? originalMessage.CreatedAt
         };
 

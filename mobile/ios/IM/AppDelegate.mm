@@ -3,11 +3,13 @@
 #import <React/RCTBundleURLProvider.h>
 #import <AVFoundation/AVFoundation.h>
 #import <Firebase.h>
+#import <FirebaseMessaging/FirebaseMessaging.h>
 #import <PushKit/PushKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import "RNCallKeep.h"
 #import "RNVoipPushNotificationManager.h"
 
-@interface AppDelegate () <PKPushRegistryDelegate>
+@interface AppDelegate () <PKPushRegistryDelegate, UNUserNotificationCenterDelegate, FIRMessagingDelegate>
 @property (nonatomic, strong) PKPushRegistry *voipRegistry;
 @end
 
@@ -44,7 +46,73 @@
   // Register for VoIP push notifications
   [RNVoipPushNotificationManager voipRegistration];
 
+  // Set up Firebase Messaging delegate
+  [FIRMessaging messaging].delegate = self;
+
+  // Set up UNUserNotificationCenter delegate for foreground notifications
+  [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+
+  // Request notification permissions
+  UNAuthorizationOptions authOptions = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+  [[UNUserNotificationCenter currentNotificationCenter]
+      requestAuthorizationWithOptions:authOptions
+      completionHandler:^(BOOL granted, NSError * _Nullable error) {
+        if (error) {
+          NSLog(@"Error requesting notification authorization: %@", error);
+        }
+        NSLog(@"Notification permission granted: %@", granted ? @"YES" : @"NO");
+      }];
+
+  // Register for remote notifications
+  [application registerForRemoteNotifications];
+
   return [super application:application didFinishLaunchingWithOptions:launchOptions];
+}
+
+#pragma mark - Remote Notifications (APNS)
+
+// Called when APNS has assigned the device a unique token
+- (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken {
+  NSLog(@"APNS Device Token received");
+  // Set APNS token for Firebase
+  [FIRMessaging messaging].APNSToken = deviceToken;
+}
+
+// Called when APNS failed to register the device
+- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
+  NSLog(@"Failed to register for remote notifications: %@", error);
+}
+
+#pragma mark - FIRMessagingDelegate
+
+// Called when FCM token is received or refreshed
+- (void)messaging:(FIRMessaging *)messaging didReceiveRegistrationToken:(NSString *)fcmToken {
+  NSLog(@"FCM Token received: %@", fcmToken);
+  // Post notification so React Native can pick it up
+  NSDictionary *dataDict = [NSDictionary dictionaryWithObject:fcmToken forKey:@"token"];
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"FCMToken" object:nil userInfo:dataDict];
+}
+
+#pragma mark - UNUserNotificationCenterDelegate
+
+// Called when a notification is delivered to a foreground app
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+  NSDictionary *userInfo = notification.request.content.userInfo;
+  NSLog(@"Notification received in foreground: %@", userInfo);
+
+  // Show the notification even when app is in foreground
+  completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+}
+
+// Called when user taps on a notification
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+  NSDictionary *userInfo = response.notification.request.content.userInfo;
+  NSLog(@"User tapped notification: %@", userInfo);
+  completionHandler();
 }
 
 #pragma mark - PushKit VoIP Delegates

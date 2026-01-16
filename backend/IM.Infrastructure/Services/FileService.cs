@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using IM.Core.Entities;
 using IM.Core.Interfaces;
 using IM.Infrastructure.Data;
@@ -10,13 +11,21 @@ public class FileService : IFileService
 {
     private readonly ApplicationDbContext _context;
     private readonly IConfiguration _configuration;
+    private readonly IDocumentWatermarkService _watermarkService;
+    private readonly ILogger<FileService> _logger;
     private readonly string _uploadPath;
     private readonly string _baseUrl;
 
-    public FileService(ApplicationDbContext context, IConfiguration configuration)
+    public FileService(
+        ApplicationDbContext context,
+        IConfiguration configuration,
+        IDocumentWatermarkService watermarkService,
+        ILogger<FileService> logger)
     {
         _context = context;
         _configuration = configuration;
+        _watermarkService = watermarkService;
+        _logger = logger;
         _uploadPath = _configuration["FileStorage:UploadPath"] ?? "uploads";
         _baseUrl = _configuration["FileStorage:BaseUrl"] ?? "/api/files";
 
@@ -42,10 +51,43 @@ public class FileService : IFileService
             Directory.CreateDirectory(directory);
         }
 
+        // Get user's service number for watermarking
+        var user = await _context.Users
+            .Include(u => u.NominalRoll)
+            .FirstOrDefaultAsync(u => u.Id == userId);
+
+        var serviceNumber = user?.NominalRoll?.ServiceNumber;
+        var uploaderName = user?.DisplayName ?? user?.NominalRoll?.FullName;
+
+        // Apply watermark to PDF documents
+        Stream streamToSave = fileStream;
+        if (_watermarkService.CanWatermark(mimeType, fileName) && !string.IsNullOrEmpty(serviceNumber))
+        {
+            try
+            {
+                _logger.LogInformation("Adding uploader watermark to PDF: {FileName} by {ServiceNumber}", fileName, serviceNumber);
+                streamToSave = await _watermarkService.AddUploaderWatermarkAsync(fileStream, serviceNumber, uploaderName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to watermark PDF, saving original file");
+                // Continue with original stream if watermarking fails
+                if (fileStream.CanSeek)
+                    fileStream.Position = 0;
+                streamToSave = fileStream;
+            }
+        }
+
         // Save file
         using (var fs = new FileStream(fullPath, FileMode.Create))
         {
-            await fileStream.CopyToAsync(fs);
+            await streamToSave.CopyToAsync(fs);
+        }
+
+        // Dispose watermarked stream if it's different from original
+        if (streamToSave != fileStream)
+        {
+            await streamToSave.DisposeAsync();
         }
 
         var fileInfo = new FileInfo(fullPath);
@@ -165,5 +207,82 @@ public class FileService : IFileService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
+    }
+
+    public async Task<string?> CreateForwardedCopyWithWatermarkAsync(
+        string originalFileUrl,
+        Guid forwarderId,
+        string? forwarderServiceNumber,
+        string? forwarderName,
+        int forwardOrder)
+    {
+        // Only process if we have a service number and the file is a PDF
+        if (string.IsNullOrEmpty(forwarderServiceNumber))
+        {
+            _logger.LogDebug("No service number provided for forwarding watermark");
+            return null;
+        }
+
+        // Extract the relative path from the URL
+        var relativePath = originalFileUrl.Replace(_baseUrl + "/", "");
+        var fullPath = Path.Combine(_uploadPath, relativePath);
+
+        if (!File.Exists(fullPath))
+        {
+            _logger.LogWarning("Original file not found for watermarking: {Path}", fullPath);
+            return null;
+        }
+
+        // Check if it's a PDF
+        var extension = Path.GetExtension(fullPath).ToLowerInvariant();
+        if (extension != ".pdf")
+        {
+            _logger.LogDebug("File is not a PDF, skipping watermark: {Extension}", extension);
+            return null;
+        }
+
+        try
+        {
+            // Read the original file
+            using var originalStream = new FileStream(fullPath, FileMode.Open, FileAccess.Read);
+
+            // Apply watermark
+            var watermarkedStream = await _watermarkService.AddForwarderWatermarkAsync(
+                originalStream,
+                forwarderServiceNumber,
+                forwarderName,
+                forwardOrder);
+
+            // Create new file with watermark
+            var newFileId = Guid.NewGuid();
+            var newFileName = $"{newFileId}{extension}";
+            var newRelativePath = Path.Combine(DateTime.UtcNow.ToString("yyyy/MM/dd"), newFileName);
+            var newFullPath = Path.Combine(_uploadPath, newRelativePath);
+
+            // Ensure directory exists
+            var directory = Path.GetDirectoryName(newFullPath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // Save the watermarked file
+            using (var fs = new FileStream(newFullPath, FileMode.Create))
+            {
+                await watermarkedStream.CopyToAsync(fs);
+            }
+
+            await watermarkedStream.DisposeAsync();
+
+            var newUrl = $"{_baseUrl}/{newRelativePath.Replace("\\", "/")}";
+            _logger.LogInformation("Created forwarded copy with watermark: {Url} by {ServiceNumber}", newUrl, forwarderServiceNumber);
+
+            return newUrl;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create forwarded copy with watermark");
+            return null;
+        }
     }
 }

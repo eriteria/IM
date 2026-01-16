@@ -84,8 +84,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pttSessions: {},
 
   setConversations: (conversations) => {
+    // Deduplicate conversations by ID (keep the first occurrence)
+    const uniqueConversations = conversations.reduce((acc, conv) => {
+      if (!acc.some(c => c.id === conv.id)) {
+        acc.push(conv);
+      }
+      return acc;
+    }, [] as Conversation[]);
+
     // Sort conversations by lastMessageAt (most recent first), with fallback to createdAt
-    const sortedConversations = [...conversations].sort((a, b) => {
+    const sortedConversations = [...uniqueConversations].sort((a, b) => {
       const aDate = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const bDate = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return bDate - aDate; // Descending order (most recent first)
@@ -269,6 +277,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       status: 'Sending',
       createdAt: now,
       statuses: [],
+      // Upload progress fields for media uploads
+      uploadProgress: messageData.uploadProgress,
+      localMediaUri: messageData.localMediaUri,
     };
 
     set((state) => ({
