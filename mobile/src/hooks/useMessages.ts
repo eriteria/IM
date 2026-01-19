@@ -8,6 +8,10 @@ import { useChatStore } from '../stores/chatStore';
 import { messageDBService } from '../database/services';
 import { Message, MessageType } from '../types';
 
+// Constants for pagination - reduced for faster initial load
+const INITIAL_PAGE_SIZE = 15;
+const LOAD_MORE_PAGE_SIZE = 20;
+
 interface SendMessageParams {
   type: MessageType;
   content?: string;
@@ -22,12 +26,14 @@ export const useMessages = (conversationId: string) => {
   const { messages, setMessages, prependMessages, addMessage } = useChatStore();
   const [isOffline, setIsOffline] = useState(false);
   const [loadedFromCache, setLoadedFromCache] = useState(false);
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
 
   const conversationMessages = messages[conversationId] || [];
 
   // Load messages from local database first (for offline support)
   // Use useRef to track if we've already loaded from cache to prevent re-loading
   const hasLoadedFromCache = useRef(false);
+  const apiLoadStarted = useRef(false);
 
   useEffect(() => {
     // Skip if we've already loaded from cache or already have messages
@@ -39,41 +45,36 @@ export const useMessages = (conversationId: string) => {
     const handle = InteractionManager.runAfterInteractions(() => {
       const loadFromLocalDB = async () => {
         try {
-          const localMessages = await messageDBService.getMessages(conversationId, 50, 0);
-          if (localMessages.length > 0) {
+          // Only load from cache if API hasn't started yet - prevents race condition
+          if (apiLoadStarted.current) {
+            hasLoadedFromCache.current = true;
+            return;
+          }
+
+          // Load fewer messages initially for faster display
+          const localMessages = await messageDBService.getMessages(conversationId, INITIAL_PAGE_SIZE, 0);
+          if (localMessages.length > 0 && !apiLoadStarted.current) {
             // Convert WatermelonDB messages to app Message format
-            // Process in smaller batches to avoid blocking the JS thread
-            const formattedMessages: Message[] = [];
-            const batchSize = 10;
-
-            for (let i = 0; i < localMessages.length; i += batchSize) {
-              const batch = localMessages.slice(i, i + batchSize);
-              const formattedBatch = batch.map(msg => ({
-                id: msg.serverId,
-                conversationId: msg.conversationId,
-                senderId: msg.senderId,
-                senderName: '',
-                type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
-                content: msg.content || undefined,
-                mediaUrl: msg.mediaUrl || undefined,
-                mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
-                mediaDuration: msg.mediaDuration || undefined,
-                status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
-                isEdited: msg.isEdited,
-                isForwarded: !!msg.forwardedFromId,
-                isDeleted: msg.isDeleted,
-                replyToMessageId: msg.replyToId || undefined,
-                createdAt: new Date(msg.createdAt).toISOString(),
-                statuses: [],
-                reactions: [],
-              }));
-              formattedMessages.push(...formattedBatch);
-
-              // Yield to allow UI updates between batches
-              if (i + batchSize < localMessages.length) {
-                await new Promise(resolve => setTimeout(resolve, 0));
-              }
-            }
+            // Single batch conversion - smaller data set now
+            const formattedMessages: Message[] = localMessages.map(msg => ({
+              id: msg.serverId,
+              conversationId: msg.conversationId,
+              senderId: msg.senderId,
+              senderName: '',
+              type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
+              content: msg.content || undefined,
+              mediaUrl: msg.mediaUrl || undefined,
+              mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
+              mediaDuration: msg.mediaDuration || undefined,
+              status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
+              isEdited: msg.isEdited,
+              isForwarded: !!msg.forwardedFromId,
+              isDeleted: msg.isDeleted,
+              replyToMessageId: msg.replyToId || undefined,
+              createdAt: new Date(msg.createdAt).toISOString(),
+              statuses: [],
+              reactions: [],
+            }));
 
             setMessages(conversationId, formattedMessages);
             setLoadedFromCache(true);
@@ -103,13 +104,18 @@ export const useMessages = (conversationId: string) => {
   const {
     data,
     isLoading,
+    isFetching,
     isError,
     error,
     refetch,
   } = useQuery({
     queryKey: ['messages', conversationId],
     queryFn: async () => {
-      const response = await conversationsApi.getMessages(conversationId, 1, 50);
+      // Mark that API load has started to prevent cache from overwriting
+      apiLoadStarted.current = true;
+
+      // Use smaller page size for faster initial load
+      const response = await conversationsApi.getMessages(conversationId, 1, INITIAL_PAGE_SIZE);
       const fetchedMessages = response.data as Message[];
 
       // Populate replyToMessage for messages that have replyToMessageId
@@ -124,31 +130,34 @@ export const useMessages = (conversationId: string) => {
         }
       });
 
-      // Sync to local database for offline access
-      try {
-        await messageDBService.syncMessages(conversationId, fetchedMessages.map(msg => ({
-          id: msg.id,
-          conversationId: msg.conversationId,
-          senderId: msg.senderId,
-          type: msg.type,
-          content: msg.content || null,
-          mediaUrl: msg.mediaUrl || null,
-          thumbnailUrl: msg.mediaThumbnailUrl || null,
-          mimeType: msg.mediaMimeType || null,
-          fileSize: msg.mediaSize || null,
-          duration: msg.mediaDuration || null,
-          replyToId: msg.replyToMessageId || null,
-          forwardedFromId: msg.isForwarded ? 'forwarded' : null,
-          isEdited: msg.isEdited || false,
-          isDeleted: msg.isDeleted || false,
-          expiresAt: msg.expiresAt || null,
-          createdAt: msg.createdAt,
-          updatedAt: msg.createdAt,
-        })));
-      } catch (syncError) {
-        console.error('Error syncing messages to local DB:', syncError);
-      }
+      // Sync to local database for offline access (defer to not block)
+      InteractionManager.runAfterInteractions(async () => {
+        try {
+          await messageDBService.syncMessages(conversationId, fetchedMessages.map(msg => ({
+            id: msg.id,
+            conversationId: msg.conversationId,
+            senderId: msg.senderId,
+            type: msg.type,
+            content: msg.content || null,
+            mediaUrl: msg.mediaUrl || null,
+            thumbnailUrl: msg.mediaThumbnailUrl || null,
+            mimeType: msg.mediaMimeType || null,
+            fileSize: msg.mediaSize || null,
+            duration: msg.mediaDuration || null,
+            replyToId: msg.replyToMessageId || null,
+            forwardedFromId: msg.isForwarded ? 'forwarded' : null,
+            isEdited: msg.isEdited || false,
+            isDeleted: msg.isDeleted || false,
+            expiresAt: msg.expiresAt || null,
+            createdAt: msg.createdAt,
+            updatedAt: msg.createdAt,
+          })));
+        } catch (syncError) {
+          console.error('Error syncing messages to local DB:', syncError);
+        }
+      });
 
+      setIsInitialLoadComplete(true);
       return fetchedMessages;
     },
     // Don't fail immediately if offline - we have cached data
@@ -169,7 +178,7 @@ export const useMessages = (conversationId: string) => {
   // Load more messages (pagination)
   const loadMoreMessages = useCallback(async (page: number) => {
     try {
-      const response = await conversationsApi.getMessages(conversationId, page, 50);
+      const response = await conversationsApi.getMessages(conversationId, page, LOAD_MORE_PAGE_SIZE);
       const newMessages = response.data as Message[];
 
       if (newMessages.length > 0) {
@@ -190,7 +199,7 @@ export const useMessages = (conversationId: string) => {
         prependMessages(conversationId, newMessages);
       }
 
-      return newMessages.length === 50; // hasMore
+      return newMessages.length === LOAD_MORE_PAGE_SIZE; // hasMore
     } catch (error) {
       console.error('Error loading more messages:', error);
       return false;
@@ -253,6 +262,7 @@ export const useMessages = (conversationId: string) => {
     error,
     isOffline,
     loadedFromCache,
+    isInitialLoadComplete,
     refetch,
     loadMoreMessages,
     sendMessage: sendMessageMutation.mutate,

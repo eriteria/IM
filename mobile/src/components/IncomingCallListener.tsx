@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { useNavigation, useNavigationState } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallStore } from '../stores/callStore';
@@ -8,18 +9,21 @@ type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 /**
  * Component that listens for incoming calls from SignalR
- * and navigates to the IncomingCallScreen.
+ * and either shows a drawer (when app is in foreground) or
+ * navigates to the IncomingCallScreen (when coming from background).
  *
  * This component prevents duplicate navigation by:
- * 1. Tracking if we've already navigated for the current call
+ * 1. Tracking if we've already handled the current call
  * 2. Checking if we're already on the IncomingCall screen
- * 3. Tracking the last navigated call ID to prevent re-navigation
+ * 3. Tracking the last handled call ID to prevent re-handling
  */
 const IncomingCallListener: React.FC = () => {
   const navigation = useNavigation<NavigationProp>();
   const incomingCall = useCallStore((state) => state.incomingCall);
-  const hasNavigated = useRef(false);
-  const lastNavigatedCallId = useRef<string | null>(null);
+  const setShowIncomingCallDrawer = useCallStore((state) => state.setShowIncomingCallDrawer);
+  const hasHandled = useRef(false);
+  const lastHandledCallId = useRef<string | null>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   // Get current route name to check if already on IncomingCall screen
   const currentRouteName = useNavigationState((state) => {
@@ -27,53 +31,76 @@ const IncomingCallListener: React.FC = () => {
     return state.routes[state.index]?.name;
   });
 
+  // Track app state changes
   useEffect(() => {
-    if (incomingCall && !hasNavigated.current) {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (incomingCall && !hasHandled.current) {
       // Check if we're already on the IncomingCall screen for this call
       if (currentRouteName === 'IncomingCall') {
-        console.log('IncomingCallListener: Already on IncomingCall screen, skipping navigation');
-        hasNavigated.current = true;
-        lastNavigatedCallId.current = incomingCall.id;
+        console.log('IncomingCallListener: Already on IncomingCall screen, skipping');
+        hasHandled.current = true;
+        lastHandledCallId.current = incomingCall.id;
         return;
       }
 
-      // Check if we already navigated for this specific call ID
-      if (lastNavigatedCallId.current === incomingCall.id) {
-        console.log('IncomingCallListener: Already navigated for this call ID, skipping');
+      // Check if we already handled this specific call ID
+      if (lastHandledCallId.current === incomingCall.id) {
+        console.log('IncomingCallListener: Already handled this call ID, skipping');
         return;
       }
 
-      hasNavigated.current = true;
-      lastNavigatedCallId.current = incomingCall.id;
+      hasHandled.current = true;
+      lastHandledCallId.current = incomingCall.id;
 
       const callerName = incomingCall.initiatorName || 'Unknown';
       const callerAvatar = incomingCall.initiatorProfilePicture;
 
-      console.log('IncomingCallListener: Navigating to IncomingCall screen:', {
+      console.log('IncomingCallListener: Incoming call detected:', {
         callId: incomingCall.id,
         callerName,
         callType: incomingCall.type,
         conversationId: incomingCall.conversationId,
+        appState: appStateRef.current,
       });
 
-      // Navigate to incoming call screen
-      navigation.navigate('IncomingCall', {
-        callId: incomingCall.id,
-        callerName,
-        callerAvatar,
-        callType: incomingCall.type,
-        conversationId: incomingCall.conversationId,
-      });
+      // Determine if app is in foreground
+      const isAppInForeground = appStateRef.current === 'active';
+
+      if (isAppInForeground) {
+        // App is in foreground - show the drawer instead of navigating
+        console.log('IncomingCallListener: App in foreground, showing drawer');
+        setShowIncomingCallDrawer(true);
+      } else {
+        // App is in background or inactive - navigate to full screen
+        // This typically happens when the app is woken by a push notification
+        console.log('IncomingCallListener: App in background, navigating to IncomingCall screen');
+        navigation.navigate('IncomingCall', {
+          callId: incomingCall.id,
+          callerName,
+          callerAvatar,
+          callType: incomingCall.type,
+          conversationId: incomingCall.conversationId,
+        });
+      }
     }
 
-    // Reset navigation flag when incoming call is cleared
+    // Reset handled flag when incoming call is cleared
     if (!incomingCall) {
-      hasNavigated.current = false;
-      lastNavigatedCallId.current = null;
+      hasHandled.current = false;
+      lastHandledCallId.current = null;
+      setShowIncomingCallDrawer(false);
     }
-  }, [incomingCall, navigation, currentRouteName]);
+  }, [incomingCall, navigation, currentRouteName, setShowIncomingCallDrawer]);
 
-  // This component doesn't render anything
+  // This component doesn't render anything - the drawer is rendered in App.tsx
   return null;
 };
 

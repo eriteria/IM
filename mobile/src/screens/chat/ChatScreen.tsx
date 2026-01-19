@@ -1165,16 +1165,16 @@ const ChatScreen: React.FC = () => {
             inverted
             extraData={extraData}
             onEndReached={loadMoreMessages}
-            onEndReachedThreshold={0.5}
+            onEndReachedThreshold={0.3}
             ListHeaderComponent={typingIndicator}
             ListFooterComponent={renderFooter}
             contentContainerStyle={styles.messagesList}
-            // Performance optimizations
+            // Performance optimizations - tuned for smaller initial load
             removeClippedSubviews={Platform.OS === 'android'}
-            maxToRenderPerBatch={8}
-            windowSize={7}
-            initialNumToRender={10}
-            updateCellsBatchingPeriod={100}
+            maxToRenderPerBatch={5}
+            windowSize={5}
+            initialNumToRender={15}
+            updateCellsBatchingPeriod={50}
             maintainVisibleContentPosition={{
               minIndexForVisible: 0,
             }}

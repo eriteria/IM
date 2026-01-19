@@ -707,22 +707,22 @@ export const leaveConversation = async (conversationId: string): Promise<void> =
 
 // Helper function to wait for chat connection with timeout
 const waitForChatConnection = async (timeoutMs: number = 5000): Promise<boolean> => {
-  if (chatConnection?.state === HubConnectionState.Connected) {
+  if (chatConnection && chatConnection.state === HubConnectionState.Connected) {
     return true;
   }
 
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {
-    if (chatConnection?.state === HubConnectionState.Connected) {
+    if (chatConnection && chatConnection.state === HubConnectionState.Connected) {
       return true;
     }
     // If connection is reconnecting, wait a bit
-    if (chatConnection?.state === HubConnectionState.Reconnecting) {
+    if (chatConnection && chatConnection.state === HubConnectionState.Reconnecting) {
       await new Promise(resolve => setTimeout(resolve, 200));
       continue;
     }
     // If disconnected, try to restart
-    if (chatConnection?.state === HubConnectionState.Disconnected) {
+    if (chatConnection && chatConnection.state === HubConnectionState.Disconnected) {
       try {
         await chatConnection.start();
         return true;

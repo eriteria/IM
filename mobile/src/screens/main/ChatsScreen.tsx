@@ -344,22 +344,21 @@ const ChatsScreen: React.FC = () => {
 
     setIsSendingMedia(true);
     try {
-      // Upload the media file
-      const uploadResponse = await filesApi.upload(selectedMedia.uri);
+      // Upload the media file using uploadFile which handles FormData creation
+      const uploadResponse = await filesApi.uploadFile(
+        selectedMedia.uri,
+        selectedMedia.type === 'video' ? 'video/mp4' : 'image/jpeg'
+      );
       const fileData = uploadResponse.data;
 
       // Determine message type based on media type
       const messageType = selectedMedia.type === 'video' ? 'Video' : 'Image';
 
       // Send the message
-      await sendMessage(
-        conversation.id,
-        '', // No text content
-        messageType,
-        fileData.id,
-        undefined, // parentMessageId
-        undefined  // forwardedFromId
-      );
+      await sendMessage(conversation.id, {
+        type: messageType,
+        mediaUrl: fileData.fileUrl,
+      });
 
       setShowConversationPicker(false);
       setSelectedMedia(null);
@@ -393,7 +392,7 @@ const ChatsScreen: React.FC = () => {
       const otherParticipant = conversation.participants.find((p) => p.userId !== userId);
       return otherParticipant?.profilePictureUrl;
     }
-    return conversation.groupPictureUrl;
+    return conversation.iconUrl;
   };
 
   const renderArchivedButton = () => {

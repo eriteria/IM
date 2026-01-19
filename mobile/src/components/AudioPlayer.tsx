@@ -154,6 +154,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ uri, duration = 0, isMine = f
         playInBackground={false}
         playWhenInactive={false}
         ignoreSilentSwitch="ignore"
+        // @ts-ignore - audioOnly is valid in react-native-video v5.x but types may not include it
         audioOnly={true}
         style={styles.hiddenVideo}
       />

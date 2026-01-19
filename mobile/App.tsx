@@ -8,6 +8,7 @@ import { check, request, PERMISSIONS, RESULTS, Permission } from 'react-native-p
 
 import RootNavigator, { RootStackParamList } from './src/navigation/RootNavigator';
 import IncomingCallListener from './src/components/IncomingCallListener';
+import IncomingCallDrawer from './src/components/IncomingCallDrawer';
 import GlobalPTTNotification from './src/components/GlobalPTTNotification';
 import { useAuthStore } from './src/stores/authStore';
 import { useCallStore } from './src/stores/callStore';
@@ -157,7 +158,7 @@ const requestBatteryOptimizationExemption = async (): Promise<void> => {
 // Inner app component that can use theme context
 const AppContent: React.FC = () => {
   const { isAuthenticated, accessToken } = useAuthStore();
-  const { setIncomingCall, clearIncomingCall } = useCallStore();
+  const { setIncomingCall, clearIncomingCall, incomingCall, showIncomingCallDrawer, setShowIncomingCallDrawer, activeCall } = useCallStore();
   const { colors, isDark } = useTheme();
   const navigationRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
   const appState = useRef(AppState.currentState);
@@ -452,6 +453,11 @@ const AppContent: React.FC = () => {
     navigationRef.current?.navigate('PTT' as any);
   };
 
+  // Handle drawer dismiss
+  const handleDrawerDismiss = () => {
+    setShowIncomingCallDrawer(false);
+  };
+
   return (
     <>
       <StatusBar
@@ -462,6 +468,19 @@ const AppContent: React.FC = () => {
         {isAuthenticated && <IncomingCallListener />}
         {isAuthenticated && <GlobalPTTNotification onPress={handlePTTNotificationPress} />}
         <RootNavigator />
+        {/* Incoming Call Drawer - shown when app is in foreground */}
+        {isAuthenticated && incomingCall && (
+          <IncomingCallDrawer
+            visible={showIncomingCallDrawer}
+            callId={incomingCall.id}
+            callerName={incomingCall.initiatorName || 'Unknown'}
+            callerAvatar={incomingCall.initiatorProfilePicture}
+            callType={incomingCall.type}
+            conversationId={incomingCall.conversationId}
+            isCallWaiting={!!activeCall}
+            onDismiss={handleDrawerDismiss}
+          />
+        )}
       </NavigationContainer>
     </>
   );

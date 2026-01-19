@@ -54,6 +54,19 @@
           }
         }
       },
+      "dotAPNS/4.2.0": {
+        "dependencies": {
+          "JetBrains.Annotations": "2021.3.0",
+          "Newtonsoft.Json": "13.0.3",
+          "Portable.BouncyCastle": "1.8.10"
+        },
+        "runtime": {
+          "lib/netstandard2.1/dotAPNS.dll": {
+            "assemblyVersion": "4.2.0.0",
+            "fileVersion": "4.2.0.0"
+          }
+        }
+      },
       "FirebaseAdmin/2.4.0": {
         "dependencies": {
           "Google.Api.Gax.Rest": "3.2.0",
@@ -219,6 +232,14 @@
       "itext7/9.5.0": {
         "dependencies": {
           "itext": "9.5.0"
+        }
+      },
+      "JetBrains.Annotations/2021.3.0": {
+        "runtime": {
+          "lib/netstandard2.0/JetBrains.Annotations.dll": {
+            "assemblyVersion": "2021.3.0.0",
+            "fileVersion": "2021.3.0.0"
+          }
         }
       },
       "Livekit.Server.Sdk.Dotnet/1.0.11": {
@@ -699,6 +720,14 @@
           "lib/net8.0/Npgsql.EntityFrameworkCore.PostgreSQL.dll": {
             "assemblyVersion": "8.0.0.0",
             "fileVersion": "8.0.0.0"
+          }
+        }
+      },
+      "Portable.BouncyCastle/1.8.10": {
+        "runtime": {
+          "lib/netstandard2.0/BouncyCastle.Crypto.dll": {
+            "assemblyVersion": "1.8.10.0",
+            "fileVersion": "1.8.10.1"
           }
         }
       },
@@ -1308,6 +1337,7 @@
           "Microsoft.EntityFrameworkCore": "8.0.0",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "8.0.0",
           "System.IdentityModel.Tokens.Jwt": "8.12.1",
+          "dotAPNS": "4.2.0",
           "itext7": "9.5.0"
         },
         "runtime": {
@@ -1345,6 +1375,13 @@
       "sha512": "sha512-PypRJq7AugnCJjq6Zu5EqFDTfRv7Gh+MtSH2T/kwiGmg1UHAflq4cE8j3uMkvXSxaayVtcwi+8hC0w+30YzzWA==",
       "path": "csvhelper/31.0.0",
       "hashPath": "csvhelper.31.0.0.nupkg.sha512"
+    },
+    "dotAPNS/4.2.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-IJkg2xe3XvLMgn+4rKU69Rgy+zNVXG4MisLeyX+/0RrbGyYIk2SVDt4/HLv7F+DqloymVPgBbjQCEhtBRJtBOQ==",
+      "path": "dotapns/4.2.0",
+      "hashPath": "dotapns.4.2.0.nupkg.sha512"
     },
     "FirebaseAdmin/2.4.0": {
       "type": "package",
@@ -1422,6 +1459,13 @@
       "sha512": "sha512-9g+bcx7rslHdYGFBojcVTp8mhCJoWbrkLceMqw/CSScB1kh7YSNPdTEsFqZW/8KrcUvTc0wtRHFqQ9R7K5gFNw==",
       "path": "itext7/9.5.0",
       "hashPath": "itext7.9.5.0.nupkg.sha512"
+    },
+    "JetBrains.Annotations/2021.3.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ddxjs5RRjf+c8m9m++WvhW1lz1bqNhsTjWvCLbQN9bvKbkJeR9MhtfNwKgBRRdG2yLHcXFr5Lf7fsvvkiPaDRg==",
+      "path": "jetbrains.annotations/2021.3.0",
+      "hashPath": "jetbrains.annotations.2021.3.0.nupkg.sha512"
     },
     "Livekit.Server.Sdk.Dotnet/1.0.11": {
       "type": "package",
@@ -1870,6 +1914,13 @@
       "sha512": "sha512-GDXiMS9peEdjSCU/rfgyHruio7q6tYuywGaktqEi6UPQ6ILechp3fVVX+dHXkIXt4nklCBzYVWkzFrSL9ubKUA==",
       "path": "npgsql.entityframeworkcore.postgresql/8.0.0",
       "hashPath": "npgsql.entityframeworkcore.postgresql.8.0.0.nupkg.sha512"
+    },
+    "Portable.BouncyCastle/1.8.10": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XLhjNAwuVB9ynwn11l5K44eyozh8q6gFseTrlnLNttejimglX7+F9+vxh60LPjvA/DAt6fUdS43N3ah8K6eaWg==",
+      "path": "portable.bouncycastle/1.8.10",
+      "hashPath": "portable.bouncycastle.1.8.10.nupkg.sha512"
     },
     "runtime.debian.8-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {
       "type": "package",

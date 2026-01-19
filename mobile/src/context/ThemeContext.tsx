@@ -94,6 +94,10 @@ const lightColors = {
   switchTrack: '#E9EDEF',
   switchTrackActive: '#25D366',
   switchThumb: '#FFFFFF',
+
+  // Additional colors for components
+  receivedBubble: '#FFFFFF',
+  surfaceSecondary: '#F0F2F5',
 };
 
 // Dark theme colors
@@ -185,6 +189,10 @@ const darkColors = {
   switchTrack: '#233138',
   switchTrackActive: '#00A884',
   switchThumb: '#E9EDEF',
+
+  // Additional colors for components
+  receivedBubble: '#1F2C34',
+  surfaceSecondary: '#0B141A',
 };
 
 export type ThemeColors = typeof lightColors;

@@ -249,15 +249,38 @@ public class CallHub : Hub
         var userId = GetUserId();
         _logger.LogInformation("DeclineCall called: callId={CallId}, userId={UserId}", callId, userId);
 
+        // Get the call BEFORE declining to know who to notify
+        var call = await _callService.GetCallByIdAsync(callId);
+
         var declineResult = await _callService.DeclineCallAsync(callId, userId);
         _logger.LogInformation("DeclineCallAsync result: {Result}", declineResult);
 
-        var call = await _callService.GetCallByIdAsync(callId);
         if (call != null)
         {
-            _logger.LogInformation("Sending CallDeclined to group call_{CallId}", callId);
+            // Send CallDeclined directly to the initiator's connections
+            // The initiator may not have joined the call group yet (they're waiting for callee to answer)
+            var initiatorConnections = GetUserConnectionIds(call.InitiatorId);
+            _logger.LogInformation("Sending CallDeclined to initiator {InitiatorId}, connections: {Count}",
+                call.InitiatorId, initiatorConnections.Count());
+
+            foreach (var connectionId in initiatorConnections)
+            {
+                _logger.LogInformation("Sending CallDeclined to connection {ConnectionId}", connectionId);
+                await Clients.Client(connectionId).SendAsync("CallDeclined", callId, userId);
+            }
+
+            // Also send to the group in case anyone else is in the call
             await Clients.Group($"call_{callId}").SendAsync("CallDeclined", callId, userId);
-            _logger.LogInformation("CallDeclined sent successfully");
+            _logger.LogInformation("CallDeclined sent successfully to initiator and group");
+
+            // Send push notification to cancel the call on initiator's device
+            // This handles cases where the app is in background
+            await _notificationService.SendCallEndedNotificationAsync(
+                callId,
+                new List<Guid> { call.InitiatorId },
+                "Call Declined",
+                call.Type.ToString(),
+                call.ConversationId);
         }
         else
         {

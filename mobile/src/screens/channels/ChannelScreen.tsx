@@ -335,7 +335,7 @@ const ChannelScreen: React.FC = () => {
         {/* Action buttons */}
         <View style={styles.postActions}>
           <TouchableOpacity
-            style={[styles.actionButton, item.myReaction && styles.actionButtonActive]}
+            style={[styles.actionButton, !!item.myReaction && styles.actionButtonActive]}
             onPress={() => setSelectedPostId(showReactionPicker ? null : item.id)}
           >
             <Icon
@@ -343,7 +343,7 @@ const ChannelScreen: React.FC = () => {
               size={20}
               color={item.myReaction ? colors.error : colors.textSecondary}
             />
-            <Text style={[styles.actionText, item.myReaction && styles.actionTextActive]}>
+            <Text style={[styles.actionText, !!item.myReaction && styles.actionTextActive]}>
               {item.myReaction || 'React'}
             </Text>
           </TouchableOpacity>

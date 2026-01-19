@@ -9,6 +9,7 @@ interface CallState {
   isMuted: boolean;
   isVideoEnabled: boolean;
   isSpeakerOn: boolean;
+  showIncomingCallDrawer: boolean; // Show drawer instead of full screen when app is in foreground
 
   // Actions
   setActiveCall: (call: Call | null) => void;
@@ -24,6 +25,7 @@ interface CallState {
   resetCallState: () => void;
   clearActiveCall: () => void;
   clearIncomingCall: () => void;
+  setShowIncomingCallDrawer: (show: boolean) => void;
 }
 
 export const useCallStore = create<CallState>((set, get) => ({
@@ -34,6 +36,7 @@ export const useCallStore = create<CallState>((set, get) => ({
   isMuted: false,
   isVideoEnabled: true,
   isSpeakerOn: false,
+  showIncomingCallDrawer: false,
 
   setActiveCall: (call) => {
     set({ activeCall: call });
@@ -106,6 +109,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       isMuted: false,
       isVideoEnabled: true,
       isSpeakerOn: false,
+      showIncomingCallDrawer: false,
     });
   },
 
@@ -114,6 +118,10 @@ export const useCallStore = create<CallState>((set, get) => ({
   },
 
   clearIncomingCall: () => {
-    set({ incomingCall: null });
+    set({ incomingCall: null, showIncomingCallDrawer: false });
+  },
+
+  setShowIncomingCallDrawer: (show) => {
+    set({ showIncomingCallDrawer: show });
   },
 }));

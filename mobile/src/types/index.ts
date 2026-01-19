@@ -58,6 +58,7 @@ export interface Participant {
   fullName?: string;
   profilePictureUrl?: string;
   phoneNumber?: string;
+  about?: string;
   role: 'Member' | 'Admin' | 'Owner';
   isOnline: boolean;
   lastSeen?: string;
