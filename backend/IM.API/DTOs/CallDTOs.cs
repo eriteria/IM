@@ -26,6 +26,7 @@ public class CallParticipantDto
     public CallStatus Status { get; set; }
     public bool IsMuted { get; set; }
     public bool IsVideoEnabled { get; set; }
+    public bool IsOnHold { get; set; }
     public DateTime? JoinedAt { get; set; }
 }
 
@@ -53,4 +54,10 @@ public class UpdateCallStatusRequest
 {
     public bool? IsMuted { get; set; }
     public bool? IsVideoEnabled { get; set; }
+    public bool? IsOnHold { get; set; }
+}
+
+public class RefreshTokenResponse
+{
+    public string Token { get; set; } = string.Empty;
 }

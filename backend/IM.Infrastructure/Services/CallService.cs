@@ -168,7 +168,7 @@ public class CallService : ICallService
         return true;
     }
 
-    public async Task<bool> UpdateParticipantStatusAsync(Guid callId, Guid userId, bool? isMuted, bool? isVideoEnabled)
+    public async Task<bool> UpdateParticipantStatusAsync(Guid callId, Guid userId, bool? isMuted, bool? isVideoEnabled, bool? isOnHold = null)
     {
         var participant = await _context.CallParticipants
             .FirstOrDefaultAsync(p => p.CallId == callId && p.UserId == userId);
@@ -180,6 +180,8 @@ public class CallService : ICallService
             participant.IsMuted = isMuted.Value;
         if (isVideoEnabled.HasValue)
             participant.IsVideoEnabled = isVideoEnabled.Value;
+        if (isOnHold.HasValue)
+            participant.IsOnHold = isOnHold.Value;
 
         await _context.SaveChangesAsync();
         return true;
@@ -237,6 +239,23 @@ public class CallService : ICallService
             .WithGrants(grants)
             .WithTtl(TimeSpan.FromHours(2))
             .ToJwt();
+    }
+
+    public async Task<string?> RefreshTokenAsync(Guid callId, Guid userId)
+    {
+        var call = await _context.Calls
+            .Include(c => c.Participants)
+            .FirstOrDefaultAsync(c => c.Id == callId);
+
+        if (call == null || call.Status != CallStatus.Ongoing)
+            return null;
+
+        var participant = call.Participants.FirstOrDefault(p => p.UserId == userId);
+        if (participant == null || participant.Status != CallStatus.Ongoing)
+            return null;
+
+        var user = await _context.Users.Include(u => u.NominalRoll).FirstAsync(u => u.Id == userId);
+        return GenerateLiveKitToken(userId, call.RoomId!, user.DisplayName ?? user.NominalRoll.FullName);
     }
 
     public async Task<bool> AddParticipantAsync(Guid callId, Guid userId)

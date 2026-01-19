@@ -11,6 +11,7 @@ public class CallParticipant : BaseEntity
     public CallStatus Status { get; set; } = CallStatus.Ringing;
     public bool IsMuted { get; set; }
     public bool IsVideoEnabled { get; set; } = true;
+    public bool IsOnHold { get; set; }
 
     // Navigation
     public Call Call { get; set; } = null!;

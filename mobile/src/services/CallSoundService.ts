@@ -51,22 +51,34 @@ class CallSoundService {
     try {
       const player = await getIOSAudioPlayer();
       if (!player) {
-        console.log('iOS audio player not available');
-        return;
+        console.error('[CallSound] iOS audio player not available - cannot play sound');
+        throw new Error('iOS audio player not initialized');
       }
 
       // Stop any currently playing sound
       await this.stopIOSSound();
 
       // Get the bundled sound file path
-      // For iOS, bundled resources are accessed via the main bundle
-      const soundPath = `${IOS_SOUND_FILES[soundName]}.mp3`;
+      // For iOS, bundled resources need the full path from the main bundle
+      // react-native-audio-recorder-player expects paths like: 'filename.mp3' for bundle resources
+      // or full file:// paths. For bundled resources, we use just the filename.
+      const soundFileName = IOS_SOUND_FILES[soundName];
+      if (!soundFileName) {
+        console.error(`[CallSound] Unknown sound name: ${soundName}`);
+        throw new Error(`Unknown sound: ${soundName}`);
+      }
+
+      // Try multiple path formats for iOS compatibility
+      // Format 1: Just the filename (works for some versions)
+      // Format 2: With extension
+      const soundPath = `${soundFileName}.mp3`;
       this.iosCurrentSoundPath = soundPath;
 
-      console.log('iOS: Playing sound:', soundPath, 'loop:', loop);
+      console.log('[CallSound] iOS: Playing sound:', soundPath, 'loop:', loop);
 
       // Start playback
-      await player.startPlayer(soundPath);
+      const result = await player.startPlayer(soundPath);
+      console.log('[CallSound] iOS: startPlayer result:', result);
 
       if (loop) {
         // Set up looping by restarting when the sound ends
@@ -84,8 +96,11 @@ class CallSoundService {
           }
         });
       }
+      console.log('[CallSound] iOS: Sound playback setup complete');
     } catch (error) {
-      console.error('Error playing iOS sound:', error);
+      console.error('[CallSound] Error playing iOS sound:', error);
+      // Re-throw the error so callers know the sound failed to play
+      throw error;
     }
   }
 
@@ -128,6 +143,9 @@ class CallSoundService {
         console.log('[CallSound] Calling NativeCallSound.playSound(ringtone_outgoing, true)');
         const result = await NativeCallSound.playSound('ringtone_outgoing', true);
         console.log('[CallSound] NativeCallSound.playSound result:', result);
+        if (!result) {
+          throw new Error('NativeCallSound.playSound returned false - native module may not be available or sound file not found');
+        }
       } else if (Platform.OS === 'ios') {
         // iOS: Use react-native-audio-recorder-player
         console.log('[CallSound] Playing iOS sound: ringtone_outgoing');
@@ -138,6 +156,8 @@ class CallSoundService {
       console.error('[CallSound] Error playing outgoing tone:', error);
       this.isPlaying = false;
       this.currentSound = null;
+      // Re-throw to let callers know the sound failed to play
+      throw error;
     }
   }
 
@@ -164,6 +184,9 @@ class CallSoundService {
         console.log('[CallSound] Calling NativeCallSound.playDefaultRingtone()');
         const result = await NativeCallSound.playDefaultRingtone();
         console.log('[CallSound] NativeCallSound.playDefaultRingtone result:', result);
+        if (!result) {
+          throw new Error('NativeCallSound.playDefaultRingtone returned false - native module may not be available');
+        }
       } else if (Platform.OS === 'ios') {
         // On iOS, use the bundled ringtone (iOS handles system ringtone via CallKit)
         console.log('[CallSound] Playing iOS sound: ringtone_incoming');
@@ -174,6 +197,8 @@ class CallSoundService {
       console.error('[CallSound] Error playing incoming ringtone:', error);
       this.isPlaying = false;
       this.currentSound = null;
+      // Re-throw to let callers know the sound failed to play
+      throw error;
     }
   }
 
@@ -194,6 +219,9 @@ class CallSoundService {
         console.log('[CallSound] Calling NativeCallSound.playSound(tone_busy, false)');
         const result = await NativeCallSound.playSound('tone_busy', false);
         console.log('[CallSound] NativeCallSound.playSound result:', result);
+        if (!result) {
+          throw new Error('NativeCallSound.playSound returned false - native module may not be available or sound file not found');
+        }
       } else if (Platform.OS === 'ios') {
         console.log('[CallSound] Playing iOS sound: tone_busy');
         await this.playIOSSound('tone_busy', false);
@@ -211,6 +239,8 @@ class CallSoundService {
       console.error('[CallSound] Error playing busy tone:', error);
       this.isPlaying = false;
       this.currentSound = null;
+      // Re-throw to let callers know the sound failed to play
+      throw error;
     }
   }
 
@@ -230,6 +260,9 @@ class CallSoundService {
         console.log('[CallSound] Calling NativeCallSound.playSound(tone_ended, false)');
         const result = await NativeCallSound.playSound('tone_ended', false);
         console.log('[CallSound] NativeCallSound.playSound result:', result);
+        if (!result) {
+          throw new Error('NativeCallSound.playSound returned false - native module may not be available or sound file not found');
+        }
       } else if (Platform.OS === 'ios') {
         console.log('[CallSound] Playing iOS sound: tone_ended');
         await this.playIOSSound('tone_ended', false);
@@ -244,9 +277,11 @@ class CallSoundService {
         }
       }, 2000);
     } catch (error) {
-      console.log('[CallSound] Note: Could not play ended tone:', error);
+      console.error('[CallSound] Error playing ended tone:', error);
       this.isPlaying = false;
       this.currentSound = null;
+      // Re-throw to let callers know the sound failed to play
+      throw error;
     }
   }
 

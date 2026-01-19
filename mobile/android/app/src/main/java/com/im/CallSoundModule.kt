@@ -47,13 +47,31 @@ class CallSoundModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
             Log.d(TAG, "Found resource ID: $resourceId for $soundName")
 
+            // Use different audio attributes based on sound type
+            // For outgoing ringtone (dial tone), use NOTIFICATION_RINGTONE to ensure it plays through speaker
+            // For other tones (busy, ended), use voice communication signalling
+            val audioAttributes = if (soundName == "ringtone_outgoing") {
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            } else {
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            }
+
+            // Set volume to max for outgoing ringtone
+            if (soundName == "ringtone_outgoing") {
+                val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING)
+                audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
+                Log.d(TAG, "Set STREAM_RING volume to max: $maxVolume")
+            }
+
             mediaPlayer = MediaPlayer.create(reactApplicationContext, resourceId).apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
+                setAudioAttributes(audioAttributes)
                 isLooping = loop
                 setVolume(1.0f, 1.0f)
 

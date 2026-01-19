@@ -11,6 +11,7 @@ public interface IMessageService
     Task<bool> UpdateMessageStatusAsync(Guid messageId, Guid userId, MessageStatus status);
     Task<bool> MarkAsDeliveredAsync(Guid messageId, Guid userId);
     Task<bool> MarkAsReadAsync(Guid messageId, Guid userId);
+    Task<int> MarkConversationAsReadAsync(Guid conversationId, Guid userId);
     Task<bool> DeleteMessageAsync(Guid messageId, Guid userId, bool forEveryone = false);
     Task<Message?> EditMessageAsync(Guid messageId, Guid userId, string newContent);
     Task<IEnumerable<Message>> SearchMessagesAsync(Guid userId, string query, int page = 1, int pageSize = 20);

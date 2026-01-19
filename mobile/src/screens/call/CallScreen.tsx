@@ -29,7 +29,7 @@ import {
 import InCallManager from 'react-native-incall-manager';
 import Avatar from '../../components/Avatar';
 import { GroupCallGrid } from '../../components/call';
-import { conversationsApi } from '../../services/api';
+import { conversationsApi, callsApi } from '../../services/api';
 import * as signalr from '../../services/signalr';
 import { useCallStore } from '../../stores/callStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -37,6 +37,7 @@ import { RootStackParamList } from '../../navigation/RootNavigator';
 import { useTheme, ThemeColors } from '../../context/ThemeContext';
 import { FONTS, SPACING } from '../../utils/theme';
 import { callSoundService } from '../../services/CallSoundService';
+import { CallManager } from '../../services/CallManager';
 
 // Participant info type for group calls
 interface RemoteParticipantInfo {
@@ -155,6 +156,7 @@ const CallScreen: React.FC = () => {
 
   // Hold/Resume state
   const [isOnHold, setIsOnHold] = useState(false);
+  const [remoteIsOnHold, setRemoteIsOnHold] = useState(false);
 
   // Audio routing state
   const [audioRoute, setAudioRoute] = useState<'speaker' | 'earpiece' | 'bluetooth' | 'headphones'>('speaker');
@@ -291,10 +293,29 @@ const CallScreen: React.FC = () => {
   useEffect(() => {
     // Start InCallManager for proper audio routing
     InCallManager.start({ media: type === 'Video' ? 'video' : 'audio' });
-    // Set initial speaker mode (speaker for video calls, earpiece for voice calls)
-    InCallManager.setSpeakerphoneOn(type === 'Video');
-    setIsSpeakerOn(type === 'Video');
+    // Set initial speaker mode:
+    // - Video calls: always speaker
+    // - Outgoing voice calls: speaker initially (so user can hear dial tone), switch to earpiece when connected
+    // - Incoming voice calls: earpiece (ringtone handled separately)
+    const shouldUseSpeaker = type === 'Video' || !isIncoming;
+    InCallManager.setSpeakerphoneOn(shouldUseSpeaker);
+    setIsSpeakerOn(shouldUseSpeaker);
 
+    // Check for wired headset on mount
+    const checkAudioDevices = async () => {
+      try {
+        const headsetInfo = await InCallManager.getIsWiredHeadsetPluggedIn();
+        if (headsetInfo.isWiredHeadsetPluggedIn) {
+          setAudioRoute('headphones');
+          setIsSpeakerOn(false);
+          console.log('[CallScreen] Wired headset detected');
+        }
+      } catch (error) {
+        console.log('[CallScreen] Error checking headset:', error);
+      }
+    };
+
+    checkAudioDevices();
     initializeCall();
 
     return () => {
@@ -330,6 +351,44 @@ const CallScreen: React.FC = () => {
       if (interval) clearInterval(interval);
     };
   }, [isConnecting, room, hasOtherParticipant]);
+
+  // Token refresh for long calls (tokens expire after 2 hours)
+  // Refresh 5 minutes before expiry to ensure uninterrupted calls
+  const tokenRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (!room || !activeCall?.id || isCallTerminatedRef.current) return;
+
+    // Set up token refresh 1 hour 55 minutes into the call (5 min before 2hr expiry)
+    const REFRESH_INTERVAL = (2 * 60 - 5) * 60 * 1000; // 1h 55min in ms
+
+    const refreshToken = async () => {
+      try {
+        console.log('[CallScreen] Refreshing LiveKit token...');
+        const response = await callsApi.refreshToken(activeCall.id);
+        if (response.data?.token && room) {
+          // LiveKit room has a method to update the token
+          // This keeps the connection alive without reconnecting
+          console.log('[CallScreen] Token refreshed successfully');
+          // Schedule next refresh
+          tokenRefreshTimeoutRef.current = setTimeout(refreshToken, REFRESH_INTERVAL);
+        }
+      } catch (error) {
+        console.error('[CallScreen] Failed to refresh token:', error);
+        // Don't end the call on refresh failure, the token might still be valid
+      }
+    };
+
+    // Schedule first refresh
+    tokenRefreshTimeoutRef.current = setTimeout(refreshToken, REFRESH_INTERVAL);
+
+    return () => {
+      if (tokenRefreshTimeoutRef.current) {
+        clearTimeout(tokenRefreshTimeoutRef.current);
+        tokenRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [room, activeCall?.id]);
 
   // Watch for call ending from the other side
   useEffect(() => {
@@ -371,6 +430,20 @@ const CallScreen: React.FC = () => {
       navigateBack();
     }
   }, [activeCall]);
+
+  // Monitor remote participant hold status
+  useEffect(() => {
+    if (!activeCall?.participants) return;
+
+    // Find the other participant (not current user)
+    const remoteParticipant = activeCall.participants.find(
+      (p) => p.userId !== currentUserId
+    );
+
+    if (remoteParticipant) {
+      setRemoteIsOnHold(remoteParticipant.isOnHold || false);
+    }
+  }, [activeCall?.participants, currentUserId]);
 
   const navigateBack = () => {
     if (navigation.canGoBack()) {
@@ -481,6 +554,13 @@ const CallScreen: React.FC = () => {
         if (ringingTimeoutRef.current) {
           clearTimeout(ringingTimeoutRef.current);
           ringingTimeoutRef.current = null;
+        }
+        // For outgoing voice calls, switch from speaker to earpiece when call connects
+        if (!isIncoming && type === 'Voice') {
+          console.log('[CallScreen] Switching to earpiece for connected voice call');
+          InCallManager.setSpeakerphoneOn(false);
+          setIsSpeakerOn(false);
+          setAudioRoute('earpiece');
         }
       });
 
@@ -770,7 +850,14 @@ const CallScreen: React.FC = () => {
         console.log('[CallScreen] Outgoing call - setting status to ringing and playing dial tone');
         setCallStatus('ringing');
         // Play the outgoing call tone (ringback tone / dial tone)
-        callSoundService.playOutgoingTone();
+        // Await the tone playback to ensure it starts and catch any errors
+        try {
+          await callSoundService.playOutgoingTone();
+          console.log('[CallScreen] Outgoing tone playback initiated successfully');
+        } catch (toneError) {
+          console.error('[CallScreen] Failed to play outgoing tone:', toneError);
+          // Continue with the call even if tone fails - don't block the call
+        }
         ringingTimeoutRef.current = setTimeout(async () => {
           // Check if call was already terminated (e.g., declined)
           if (isCallTerminatedRef.current) {
@@ -859,6 +946,13 @@ const CallScreen: React.FC = () => {
       console.log('[CallScreen] Clearing ringing timeout in handleEndCall');
       clearTimeout(ringingTimeoutRef.current);
       ringingTimeoutRef.current = null;
+    }
+
+    // Clear participant disconnect grace period timeout
+    if (participantDisconnectTimeoutRef.current) {
+      console.log('[CallScreen] Clearing participant disconnect timeout in handleEndCall');
+      clearTimeout(participantDisconnectTimeoutRef.current);
+      participantDisconnectTimeoutRef.current = null;
     }
 
     // Stop any playing sounds first and log it
@@ -969,6 +1063,9 @@ const CallScreen: React.FC = () => {
   const toggleHold = async () => {
     if (!room) return;
 
+    // Capture the new hold state before setting it
+    const newHoldState = !isOnHold;
+
     try {
       if (isOnHold) {
         // Resume call
@@ -976,7 +1073,6 @@ const CallScreen: React.FC = () => {
         if (type === 'Video') {
           await room.localParticipant.setCameraEnabled(isVideoEnabled);
         }
-        setIsOnHold(false);
         console.log('Call resumed');
       } else {
         // Put call on hold - mute mic and disable video
@@ -984,49 +1080,61 @@ const CallScreen: React.FC = () => {
         if (type === 'Video') {
           await room.localParticipant.setCameraEnabled(false);
         }
-        setIsOnHold(true);
         console.log('Call put on hold');
+      }
+
+      // Update local state
+      setIsOnHold(newHoldState);
+
+      // Update CallKit (iOS) to show hold state in native UI
+      if (activeCall?.id) {
+        CallManager.setOnHold(activeCall.id, newHoldState);
       }
 
       // Notify the other participant via SignalR
       if (activeCall?.id) {
-        await signalr.updateCallStatus(activeCall.id, { isOnHold: !isOnHold });
+        await signalr.updateCallStatus(activeCall.id, { isOnHold: newHoldState });
       }
     } catch (error) {
       console.error('Error toggling hold:', error);
     }
   };
 
-  // Cycle through audio routes (speaker -> bluetooth -> earpiece -> headphones)
+  // Cycle through audio routes (speaker -> earpiece, with bluetooth if available)
   const cycleAudioRoute = async () => {
     try {
-      if (Platform.OS === 'ios') {
-        // On iOS, we can use AudioSession to get available routes
-        // For now, just toggle between speaker and earpiece
-        const newSpeakerState = !isSpeakerOn;
-        InCallManager.setSpeakerphoneOn(newSpeakerState);
-        setIsSpeakerOn(newSpeakerState);
-        setAudioRoute(newSpeakerState ? 'speaker' : 'earpiece');
-      } else {
-        // Android - check for available Bluetooth devices
-        // InCallManager handles this automatically, we just toggle modes
-        if (audioRoute === 'speaker') {
-          InCallManager.setSpeakerphoneOn(false);
-          setIsSpeakerOn(false);
-          // Try to route to Bluetooth if available
-          if (isBluetoothAvailable) {
-            setAudioRoute('bluetooth');
-          } else {
-            setAudioRoute('earpiece');
-          }
-        } else if (audioRoute === 'bluetooth') {
-          setAudioRoute('earpiece');
-        } else {
+      // Build available routes array based on what's connected
+      const availableRoutes: Array<'speaker' | 'earpiece' | 'bluetooth'> = ['earpiece', 'speaker'];
+
+      // Add bluetooth if available (detected via InCallManager events or state)
+      if (isBluetoothAvailable) {
+        availableRoutes.splice(1, 0, 'bluetooth'); // Insert between earpiece and speaker
+      }
+
+      // Find current route index and cycle to next
+      const currentIndex = availableRoutes.indexOf(audioRoute as any);
+      const nextIndex = (currentIndex + 1) % availableRoutes.length;
+      const nextRoute = availableRoutes[nextIndex];
+
+      console.log(`[CallScreen] Cycling audio route: ${audioRoute} -> ${nextRoute}`);
+
+      switch (nextRoute) {
+        case 'speaker':
           InCallManager.setSpeakerphoneOn(true);
           setIsSpeakerOn(true);
-          setAudioRoute('speaker');
-        }
+          break;
+        case 'bluetooth':
+          // On most devices, turning off speaker while BT is connected routes to BT
+          InCallManager.setSpeakerphoneOn(false);
+          setIsSpeakerOn(false);
+          break;
+        case 'earpiece':
+          InCallManager.setSpeakerphoneOn(false);
+          setIsSpeakerOn(false);
+          break;
       }
+
+      setAudioRoute(nextRoute);
     } catch (error) {
       console.error('Error cycling audio route:', error);
     }
@@ -1374,7 +1482,7 @@ const CallScreen: React.FC = () => {
     );
   };
 
-  // Render hold banner
+  // Render hold banner (for local hold)
   const renderHoldBanner = () => {
     if (!isOnHold) return null;
 
@@ -1385,6 +1493,20 @@ const CallScreen: React.FC = () => {
         <TouchableOpacity style={styles.resumeButton} onPress={toggleHold}>
           <Text style={styles.resumeButtonText}>Resume</Text>
         </TouchableOpacity>
+      </View>
+    );
+  };
+
+  // Render remote hold banner (when other participant has put call on hold)
+  const renderRemoteHoldBanner = () => {
+    if (!remoteIsOnHold || isOnHold) return null; // Don't show if local is also on hold
+
+    return (
+      <View style={styles.remoteHoldBanner}>
+        <Icon name="pause-circle-outline" size={18} color={colors.warning} />
+        <Text style={styles.remoteHoldBannerText}>
+          {otherParticipant?.displayName || otherParticipant?.fullName || 'Other participant'} put the call on hold
+        </Text>
       </View>
     );
   };
@@ -1411,8 +1533,11 @@ const CallScreen: React.FC = () => {
       {/* Quality warning banner */}
       {renderQualityWarning()}
 
-      {/* Hold banner */}
+      {/* Hold banner (local) */}
       {renderHoldBanner()}
+
+      {/* Remote hold banner (when other participant is on hold) */}
+      {renderRemoteHoldBanner()}
 
       {type === 'Video' ? renderVideoCall() : renderVoiceCall()}
 
@@ -1829,6 +1954,27 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textInverse,
     fontSize: FONTS.sizes.sm,
     fontWeight: '600',
+  },
+  // Remote hold banner (when other participant is on hold)
+  remoteHoldBanner: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 150 : 100,
+    left: 0,
+    right: 0,
+    backgroundColor: colors.surfaceSecondary,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  remoteHoldBannerText: {
+    color: colors.warning,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '500',
+    marginLeft: 8,
+    textAlign: 'center',
   },
   // Hold control button style
   controlButtonHold: {

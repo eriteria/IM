@@ -161,15 +161,18 @@ public class MessageService : IMessageService
             .Take(pageSize)
             .ToListAsync();
 
-        // Decrypt all messages and their reply messages
-        foreach (var message in messages)
+        // Decrypt all messages in parallel for better performance
+        await Task.Run(() =>
         {
-            DecryptMessage(message);
-            if (message.ReplyToMessage != null)
+            Parallel.ForEach(messages, message =>
             {
-                DecryptMessage(message.ReplyToMessage);
-            }
-        }
+                DecryptMessage(message);
+                if (message.ReplyToMessage != null)
+                {
+                    DecryptMessage(message.ReplyToMessage);
+                }
+            });
+        });
 
         return messages;
     }
@@ -201,6 +204,36 @@ public class MessageService : IMessageService
     public async Task<bool> MarkAsReadAsync(Guid messageId, Guid userId)
     {
         return await UpdateMessageStatusAsync(messageId, userId, MessageStatus.Read);
+    }
+
+    /// <summary>
+    /// Marks all unread messages in a conversation as read for a user in a single batch operation.
+    /// This is much more efficient than marking messages one by one.
+    /// </summary>
+    public async Task<int> MarkConversationAsReadAsync(Guid conversationId, Guid userId)
+    {
+        var now = DateTime.UtcNow;
+
+        // Get all unread message statuses for this user in this conversation
+        var unreadStatuses = await _context.MessageStatuses
+            .Include(ms => ms.Message)
+            .Where(ms => ms.UserId == userId
+                && ms.Message.ConversationId == conversationId
+                && ms.Status != MessageStatus.Read)
+            .ToListAsync();
+
+        if (unreadStatuses.Count == 0)
+            return 0;
+
+        // Batch update all statuses
+        foreach (var status in unreadStatuses)
+        {
+            status.Status = MessageStatus.Read;
+            status.ReadAt = now;
+        }
+
+        await _context.SaveChangesAsync();
+        return unreadStatuses.Count;
     }
 
     public async Task<bool> DeleteMessageAsync(Guid messageId, Guid userId, bool forEveryone = false)

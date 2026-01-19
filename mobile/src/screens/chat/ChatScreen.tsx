@@ -87,10 +87,10 @@ const ChatScreen: React.FC = () => {
   } = useMessages(conversationId);
 
   // Subscribe specifically to typing users for this conversation to ensure re-renders
-  // Using JSON.stringify for deep comparison since arrays don't compare by value
-  const typingUsersRaw = useChatStore((state) => state.typingUsers[conversationId] || []);
-  const typingUsersKey = JSON.stringify(typingUsersRaw);
-  const typingUserIds = React.useMemo(() => typingUsersRaw, [typingUsersKey]);
+  // Use shallow comparison with useCallback selector for better performance
+  const typingUserIds = useChatStore(
+    useCallback((state) => state.typingUsers[conversationId] || [], [conversationId])
+  );
 
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);

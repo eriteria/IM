@@ -224,8 +224,10 @@ export const callsApi = {
 
   end: (id: string) => api.post(`/calls/${id}/end`),
 
-  updateStatus: (id: string, data: { isMuted?: boolean; isVideoEnabled?: boolean }) =>
+  updateStatus: (id: string, data: { isMuted?: boolean; isVideoEnabled?: boolean; isOnHold?: boolean }) =>
     api.put(`/calls/${id}/status`, data),
+
+  refreshToken: (id: string) => api.post<{ token: string }>(`/calls/${id}/refresh-token`),
 
   deleteCall: (id: string) => api.delete(`/calls/${id}`),
 

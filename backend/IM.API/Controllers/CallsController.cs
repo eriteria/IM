@@ -167,14 +167,36 @@ public class CallsController : ControllerBase
     public async Task<ActionResult> UpdateCallStatus(Guid id, [FromBody] UpdateCallStatusRequest request)
     {
         var userId = GetUserId();
-        var success = await _callService.UpdateParticipantStatusAsync(id, userId, request.IsMuted, request.IsVideoEnabled);
+        var success = await _callService.UpdateParticipantStatusAsync(id, userId, request.IsMuted, request.IsVideoEnabled, request.IsOnHold);
 
         if (!success)
         {
             return BadRequest(new { message = "Failed to update call status" });
         }
 
+        // Broadcast participant status change to all participants in the call
+        await _callHub.Clients.Group($"call_{id}").SendAsync("ParticipantStatusChanged", id, userId, new
+        {
+            IsMuted = request.IsMuted,
+            IsVideoEnabled = request.IsVideoEnabled,
+            IsOnHold = request.IsOnHold
+        });
+
         return Ok(new { message = "Call status updated" });
+    }
+
+    [HttpPost("{id}/refresh-token")]
+    public async Task<ActionResult<RefreshTokenResponse>> RefreshToken(Guid id)
+    {
+        var userId = GetUserId();
+        var newToken = await _callService.RefreshTokenAsync(id, userId);
+
+        if (newToken == null)
+        {
+            return BadRequest(new { message = "Failed to refresh token. Call may have ended or you are not a participant." });
+        }
+
+        return Ok(new RefreshTokenResponse { Token = newToken });
     }
 
     private static CallDto MapToDto(Core.Entities.Call call)
@@ -200,6 +222,7 @@ public class CallsController : ControllerBase
                 Status = p.Status,
                 IsMuted = p.IsMuted,
                 IsVideoEnabled = p.IsVideoEnabled,
+                IsOnHold = p.IsOnHold,
                 JoinedAt = p.JoinedAt
             }).ToList()
         };

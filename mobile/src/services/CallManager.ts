@@ -20,6 +20,7 @@ class CallManagerClass {
   private onAnswerCall: ((callId: string) => void) | null = null;
   private onEndCall: ((callId: string) => void) | null = null;
   private onMuteCall: ((callId: string, muted: boolean) => void) | null = null;
+  private onHoldCall: ((callId: string, hold: boolean) => void) | null = null;
 
   /**
    * Initialize CallKeep (CallKit on iOS only)
@@ -114,6 +115,15 @@ class CallManagerClass {
       const call = this.getCallByUUID(callUUID);
       if (call && this.onMuteCall) {
         this.onMuteCall(call.callId, muted);
+      }
+    });
+
+    // Hold toggle from native UI (iOS)
+    RNCallKeep.addEventListener('didToggleHoldCallAction', ({ callUUID, hold }) => {
+      console.log('CallKeep: didToggleHoldCallAction', callUUID, hold);
+      const call = this.getCallByUUID(callUUID);
+      if (call && this.onHoldCall) {
+        this.onHoldCall(call.callId, hold);
       }
     });
 
@@ -348,10 +358,12 @@ class CallManagerClass {
     onAnswerCall?: (callId: string) => void;
     onEndCall?: (callId: string) => void;
     onMuteCall?: (callId: string, muted: boolean) => void;
+    onHoldCall?: (callId: string, hold: boolean) => void;
   }): void {
     if (callbacks.onAnswerCall) this.onAnswerCall = callbacks.onAnswerCall;
     if (callbacks.onEndCall) this.onEndCall = callbacks.onEndCall;
     if (callbacks.onMuteCall) this.onMuteCall = callbacks.onMuteCall;
+    if (callbacks.onHoldCall) this.onHoldCall = callbacks.onHoldCall;
   }
 
   /**
@@ -420,6 +432,7 @@ class CallManagerClass {
       RNCallKeep.removeEventListener('answerCall');
       RNCallKeep.removeEventListener('endCall');
       RNCallKeep.removeEventListener('didPerformSetMutedCallAction');
+      RNCallKeep.removeEventListener('didToggleHoldCallAction');
       RNCallKeep.removeEventListener('didPerformDTMFAction');
       RNCallKeep.removeEventListener('didChangeAudioRoute');
       RNCallKeep.removeEventListener('didActivateAudioSession');

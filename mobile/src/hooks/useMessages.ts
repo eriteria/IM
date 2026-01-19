@@ -42,25 +42,38 @@ export const useMessages = (conversationId: string) => {
           const localMessages = await messageDBService.getMessages(conversationId, 50, 0);
           if (localMessages.length > 0) {
             // Convert WatermelonDB messages to app Message format
-            const formattedMessages: Message[] = localMessages.map(msg => ({
-              id: msg.serverId,
-              conversationId: msg.conversationId,
-              senderId: msg.senderId,
-              senderName: '',
-              type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
-              content: msg.content || undefined,
-              mediaUrl: msg.mediaUrl || undefined,
-              mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
-              mediaDuration: msg.mediaDuration || undefined,
-              status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
-              isEdited: msg.isEdited,
-              isForwarded: !!msg.forwardedFromId,
-              isDeleted: msg.isDeleted,
-              replyToMessageId: msg.replyToId || undefined,
-              createdAt: new Date(msg.createdAt).toISOString(),
-              statuses: [],
-              reactions: [],
-            }));
+            // Process in smaller batches to avoid blocking the JS thread
+            const formattedMessages: Message[] = [];
+            const batchSize = 10;
+
+            for (let i = 0; i < localMessages.length; i += batchSize) {
+              const batch = localMessages.slice(i, i + batchSize);
+              const formattedBatch = batch.map(msg => ({
+                id: msg.serverId,
+                conversationId: msg.conversationId,
+                senderId: msg.senderId,
+                senderName: '',
+                type: msg.type.charAt(0).toUpperCase() + msg.type.slice(1) as any,
+                content: msg.content || undefined,
+                mediaUrl: msg.mediaUrl || undefined,
+                mediaThumbnailUrl: msg.mediaThumbnailUrl || undefined,
+                mediaDuration: msg.mediaDuration || undefined,
+                status: msg.status === 'sending' ? 'Sending' : msg.status === 'sent' ? 'Sent' : 'Delivered',
+                isEdited: msg.isEdited,
+                isForwarded: !!msg.forwardedFromId,
+                isDeleted: msg.isDeleted,
+                replyToMessageId: msg.replyToId || undefined,
+                createdAt: new Date(msg.createdAt).toISOString(),
+                statuses: [],
+                reactions: [],
+              }));
+              formattedMessages.push(...formattedBatch);
+
+              // Yield to allow UI updates between batches
+              if (i + batchSize < localMessages.length) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+              }
+            }
 
             setMessages(conversationId, formattedMessages);
             setLoadedFromCache(true);

@@ -8,6 +8,7 @@ using IM.Core.Entities;
 using IM.Core.Enums;
 using IM.Core.Interfaces;
 using IM.Infrastructure.Data;
+using dotAPNS;
 using FirebaseMessage = FirebaseAdmin.Messaging.Message;
 
 namespace IM.Infrastructure.Services;
@@ -18,6 +19,9 @@ public class NotificationService : INotificationService
     private readonly IConfiguration _configuration;
     private readonly ILogger<NotificationService> _logger;
     private readonly FirebaseMessaging? _firebaseMessaging;
+    private readonly ApnsClient? _apnsClient;
+    private readonly string? _apnsBundleId;
+    private readonly bool _apnsUseSandbox;
 
     public NotificationService(ApplicationDbContext context, IConfiguration configuration, ILogger<NotificationService> logger)
     {
@@ -34,36 +38,90 @@ public class NotificationService : INotificationService
             if (string.IsNullOrEmpty(firebaseCredentialsPath))
             {
                 _logger.LogWarning("Firebase credentials path is not configured. Push notifications will be disabled.");
-                return;
             }
-
-            // Try to resolve the path - it might be relative to the app directory
-            var fullPath = Path.IsPathRooted(firebaseCredentialsPath)
-                ? firebaseCredentialsPath
-                : Path.Combine(AppContext.BaseDirectory, firebaseCredentialsPath);
-
-            _logger.LogInformation("Checking Firebase credentials at: {FullPath}", fullPath);
-
-            if (!File.Exists(fullPath))
+            else
             {
-                _logger.LogWarning("Firebase credentials file not found at: {Path}. Push notifications will be disabled.", fullPath);
-                return;
-            }
+                // Try to resolve the path - it might be relative to the app directory
+                var fullPath = Path.IsPathRooted(firebaseCredentialsPath)
+                    ? firebaseCredentialsPath
+                    : Path.Combine(AppContext.BaseDirectory, firebaseCredentialsPath);
 
-            if (FirebaseApp.DefaultInstance == null)
-            {
-                _logger.LogInformation("Initializing Firebase with credentials from: {Path}", fullPath);
-                FirebaseApp.Create(new AppOptions
+                _logger.LogInformation("Checking Firebase credentials at: {FullPath}", fullPath);
+
+                if (!File.Exists(fullPath))
                 {
-                    Credential = GoogleCredential.FromFile(fullPath)
-                });
+                    _logger.LogWarning("Firebase credentials file not found at: {Path}. Push notifications will be disabled.", fullPath);
+                }
+                else if (FirebaseApp.DefaultInstance == null)
+                {
+                    _logger.LogInformation("Initializing Firebase with credentials from: {Path}", fullPath);
+                    FirebaseApp.Create(new AppOptions
+                    {
+                        Credential = GoogleCredential.FromFile(fullPath)
+                    });
+                    _firebaseMessaging = FirebaseMessaging.DefaultInstance;
+                    _logger.LogInformation("Firebase initialized successfully. Push notifications are enabled.");
+                }
+                else
+                {
+                    _firebaseMessaging = FirebaseMessaging.DefaultInstance;
+                }
             }
-            _firebaseMessaging = FirebaseMessaging.DefaultInstance;
-            _logger.LogInformation("Firebase initialized successfully. Push notifications are enabled.");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to initialize Firebase. Push notifications will be disabled.");
+        }
+
+        // Initialize APNs client for iOS VoIP pushes
+        try
+        {
+            var keyId = _configuration["Apns:KeyId"];
+            var teamId = _configuration["Apns:TeamId"];
+            var bundleId = _configuration["Apns:BundleId"];
+            var p8KeyPath = _configuration["Apns:P8PrivateKeyPath"];
+            var useSandbox = _configuration.GetValue<bool>("Apns:UseSandbox", true);
+
+            if (string.IsNullOrEmpty(keyId) || string.IsNullOrEmpty(teamId) || string.IsNullOrEmpty(bundleId) || string.IsNullOrEmpty(p8KeyPath))
+            {
+                _logger.LogWarning("APNs configuration is incomplete. iOS VoIP push notifications will be disabled. KeyId: {KeyId}, TeamId: {TeamId}, BundleId: {BundleId}",
+                    string.IsNullOrEmpty(keyId) ? "MISSING" : "OK",
+                    string.IsNullOrEmpty(teamId) ? "MISSING" : "OK",
+                    string.IsNullOrEmpty(bundleId) ? "MISSING" : "OK");
+            }
+            else
+            {
+                var fullP8Path = Path.IsPathRooted(p8KeyPath)
+                    ? p8KeyPath
+                    : Path.Combine(AppContext.BaseDirectory, p8KeyPath);
+
+                if (!File.Exists(fullP8Path))
+                {
+                    _logger.LogWarning("APNs P8 key file not found at: {Path}. iOS VoIP push notifications will be disabled.", fullP8Path);
+                }
+                else
+                {
+                    var p8Key = File.ReadAllText(fullP8Path);
+                    var options = new ApnsJwtOptions
+                    {
+                        KeyId = keyId,
+                        TeamId = teamId,
+                        BundleId = bundleId,
+                        CertContent = p8Key
+                    };
+
+                    var httpClient = new HttpClient();
+                    _apnsClient = ApnsClient.CreateUsingJwt(httpClient, options);
+                    _apnsBundleId = bundleId;
+                    _apnsUseSandbox = useSandbox;
+                    _logger.LogInformation("APNs client initialized successfully for bundle {BundleId} (Sandbox: {UseSandbox}). iOS VoIP push notifications are enabled.",
+                        bundleId, useSandbox);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to initialize APNs client. iOS VoIP push notifications will be disabled.");
         }
     }
 
@@ -183,12 +241,6 @@ public class NotificationService : INotificationService
 
     public async Task SendCallNotificationAsync(Call call, IEnumerable<Guid> recipientIds)
     {
-        if (_firebaseMessaging == null)
-        {
-            _logger.LogWarning("Firebase messaging not initialized, cannot send call notification");
-            return;
-        }
-
         var devices = await _context.UserDevices
             .Where(d => recipientIds.Contains(d.UserId) && d.IsActive)
             .ToListAsync();
@@ -208,70 +260,169 @@ public class NotificationService : INotificationService
 
         _logger.LogInformation("Sending call notification to {DeviceCount} devices for call {CallId}", devices.Count, call.Id);
 
-        foreach (var device in devices)
+        // Separate iOS VoIP tokens and Android/regular tokens
+        var iosVoipDevices = devices.Where(d => d.Platform == DevicePlatform.iOS && d.IsVoipToken).ToList();
+        var androidDevices = devices.Where(d => d.Platform == DevicePlatform.Android).ToList();
+        var iosFcmDevices = devices.Where(d => d.Platform == DevicePlatform.iOS && !d.IsVoipToken).ToList();
+
+        // Send VoIP push to iOS devices via APNs (required for waking device with CallKit)
+        if (iosVoipDevices.Any())
         {
-            try
+            if (_apnsClient != null && !string.IsNullOrEmpty(_apnsBundleId))
             {
-                // For Android: Use data-only message with high priority
-                // This ensures the app's background message handler is invoked
-                // and can display a high-priority notification that wakes the device
-                var firebaseMessage = new FirebaseMessage
+                foreach (var device in iosVoipDevices)
                 {
-                    Token = device.DeviceToken,
-                    // Data-only message for background handling
-                    Data = new Dictionary<string, string>
+                    try
                     {
-                        { "type", "call" },
-                        { "callId", call.Id.ToString() },
-                        { "callerId", call.InitiatorId.ToString() },
-                        { "callerName", callerName },
-                        { "callType", call.Type.ToString() },
-                        { "conversationId", call.ConversationId.ToString() }
-                    },
-                    Android = new AndroidConfig
-                    {
-                        // High priority ensures the message is delivered immediately
-                        Priority = Priority.High,
-                        // Short TTL for calls - they're time-sensitive
-                        TimeToLive = TimeSpan.FromSeconds(30)
-                    },
-                    Apns = new ApnsConfig
-                    {
-                        Headers = new Dictionary<string, string>
+                        // VoIP push payload - must use .voip topic suffix
+                        var voipPayload = new Dictionary<string, object>
                         {
-                            { "apns-push-type", "voip" },
-                            { "apns-priority", "10" },
-                            { "apns-expiration", "30" }
-                        },
-                        Aps = new Aps
+                            { "callId", call.Id.ToString() },
+                            { "callerId", call.InitiatorId.ToString() },
+                            { "callerName", callerName },
+                            { "callType", call.Type.ToString() },
+                            { "conversationId", call.ConversationId.ToString() },
+                            { "uuid", Guid.NewGuid().ToString() }
+                        };
+
+                        var push = new ApplePush(ApplePushType.Voip)
+                            .AddToken(device.DeviceToken)
+                            .AddCustomProperty("callId", call.Id.ToString())
+                            .AddCustomProperty("callerId", call.InitiatorId.ToString())
+                            .AddCustomProperty("callerName", callerName)
+                            .AddCustomProperty("callType", call.Type.ToString())
+                            .AddCustomProperty("conversationId", call.ConversationId.ToString())
+                            .SetPriority(10);
+
+                        // Use sandbox for development builds
+                        if (_apnsUseSandbox)
                         {
-                            ContentAvailable = true,
-                            Sound = "ringtone.caf",
-                            MutableContent = true
+                            push = push.SendToDevelopmentServer();
+                        }
+
+                        var response = await _apnsClient.SendAsync(push);
+
+                        if (response.IsSuccessful)
+                        {
+                            _logger.LogInformation("iOS VoIP push sent successfully via APNs. Device: {DeviceToken}",
+                                device.DeviceToken[..Math.Min(20, device.DeviceToken.Length)] + "...");
+                        }
+                        else
+                        {
+                            _logger.LogError("iOS VoIP push failed. Reason: {Reason}, Device: {DeviceToken}",
+                                response.Reason, device.DeviceToken[..Math.Min(20, device.DeviceToken.Length)] + "...");
+
+                            // Mark invalid tokens as inactive
+                            if (response.Reason == ApnsResponseReason.BadDeviceToken ||
+                                response.Reason == ApnsResponseReason.Unregistered)
+                            {
+                                device.IsActive = false;
+                                await _context.SaveChangesAsync();
+                                _logger.LogWarning("Marked iOS VoIP device as inactive due to invalid token");
+                            }
                         }
                     }
-                };
-
-                var messageId = await _firebaseMessaging.SendAsync(firebaseMessage);
-                _logger.LogInformation("Call notification sent successfully. MessageId: {MessageId}, Device: {DeviceToken}",
-                    messageId, device.DeviceToken[..20] + "...");
-            }
-            catch (FirebaseMessagingException fex)
-            {
-                _logger.LogError(fex, "Firebase error sending call notification. Code: {Code}, Message: {Message}",
-                    fex.ErrorCode, fex.Message);
-
-                // If token is invalid, mark device as inactive
-                if (fex.ErrorCode == ErrorCode.NotFound || fex.ErrorCode == ErrorCode.InvalidArgument)
-                {
-                    device.IsActive = false;
-                    await _context.SaveChangesAsync();
-                    _logger.LogWarning("Marked device as inactive due to invalid token");
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to send iOS VoIP push notification");
+                    }
                 }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Failed to send call notification to device");
+                _logger.LogWarning("APNs client not configured. Cannot send iOS VoIP push to {Count} devices.", iosVoipDevices.Count);
+            }
+        }
+
+        // Send FCM to Android devices
+        if (androidDevices.Any() && _firebaseMessaging != null)
+        {
+            foreach (var device in androidDevices)
+            {
+                try
+                {
+                    var firebaseMessage = new FirebaseMessage
+                    {
+                        Token = device.DeviceToken,
+                        Data = new Dictionary<string, string>
+                        {
+                            { "type", "call" },
+                            { "callId", call.Id.ToString() },
+                            { "callerId", call.InitiatorId.ToString() },
+                            { "callerName", callerName },
+                            { "callType", call.Type.ToString() },
+                            { "conversationId", call.ConversationId.ToString() }
+                        },
+                        Android = new AndroidConfig
+                        {
+                            Priority = Priority.High,
+                            TimeToLive = TimeSpan.FromSeconds(30)
+                        }
+                    };
+
+                    var messageId = await _firebaseMessaging.SendAsync(firebaseMessage);
+                    _logger.LogInformation("Android call notification sent via FCM. MessageId: {MessageId}, Device: {DeviceToken}",
+                        messageId, device.DeviceToken[..Math.Min(20, device.DeviceToken.Length)] + "...");
+                }
+                catch (FirebaseMessagingException fex)
+                {
+                    _logger.LogError(fex, "Firebase error sending call notification. Code: {Code}, Message: {Message}",
+                        fex.ErrorCode, fex.Message);
+
+                    if (fex.ErrorCode == ErrorCode.NotFound || fex.ErrorCode == ErrorCode.InvalidArgument)
+                    {
+                        device.IsActive = false;
+                        await _context.SaveChangesAsync();
+                        _logger.LogWarning("Marked Android device as inactive due to invalid token");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send Android call notification");
+                }
+            }
+        }
+
+        // Also send FCM to iOS devices that don't have VoIP tokens (fallback for when app is in foreground)
+        if (iosFcmDevices.Any() && _firebaseMessaging != null)
+        {
+            foreach (var device in iosFcmDevices)
+            {
+                try
+                {
+                    var firebaseMessage = new FirebaseMessage
+                    {
+                        Token = device.DeviceToken,
+                        Data = new Dictionary<string, string>
+                        {
+                            { "type", "call" },
+                            { "callId", call.Id.ToString() },
+                            { "callerId", call.InitiatorId.ToString() },
+                            { "callerName", callerName },
+                            { "callType", call.Type.ToString() },
+                            { "conversationId", call.ConversationId.ToString() }
+                        },
+                        Apns = new ApnsConfig
+                        {
+                            Headers = new Dictionary<string, string>
+                            {
+                                { "apns-priority", "10" },
+                                { "apns-push-type", "background" }
+                            },
+                            Aps = new Aps
+                            {
+                                ContentAvailable = true
+                            }
+                        }
+                    };
+
+                    var messageId = await _firebaseMessaging.SendAsync(firebaseMessage);
+                    _logger.LogInformation("iOS FCM call notification sent. MessageId: {MessageId}", messageId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send iOS FCM call notification");
+                }
             }
         }
     }

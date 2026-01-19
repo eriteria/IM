@@ -158,6 +158,7 @@ export interface CallParticipant {
   status: CallStatus;
   isMuted: boolean;
   isVideoEnabled: boolean;
+  isOnHold: boolean;
   joinedAt?: string;
 }
 

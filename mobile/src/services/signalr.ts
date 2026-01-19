@@ -4,6 +4,7 @@ import {
   HubConnectionState,
   LogLevel,
 } from '@microsoft/signalr';
+import { Platform } from 'react-native';
 import { useChatStore } from '../stores/chatStore';
 import { useCallStore } from '../stores/callStore';
 import { useAuthStore } from '../stores/authStore';
@@ -12,6 +13,8 @@ import { AppConfig } from '../config';
 import { callSoundService } from './CallSoundService';
 import { NativeCallSound } from './NativeCallSound';
 import { endNativeCall } from './NativeCallEvent';
+import { CallManager } from './CallManager';
+import { guidsEqual } from '../utils/guid';
 
 // SignalR URL is now centralized in AppConfig
 const API_URL = AppConfig.signalRUrl;
@@ -431,6 +434,7 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     console.log('Call ID:', callId);
     console.log('Caller:', callerName);
     console.log('Type:', callType);
+    console.log('Platform:', Platform.OS);
 
     // Add missed call message to the conversation
     useChatStore.getState().addMissedCallMessage(
@@ -440,14 +444,21 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
       callType
     );
 
-    // Clear any pending incoming call state - use case-insensitive comparison
+    // Clear any pending incoming call state
     const { incomingCall } = useCallStore.getState();
-    const callIdLower = callId?.toLowerCase();
-    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
-    if (incomingCallIdLower === callIdLower || incomingCall) {
+    if (guidsEqual(incomingCall?.id, callId) || incomingCall) {
       callSoundService.stopAllSounds();
       NativeCallSound.stopRingtone();
-      endNativeCall(callId);
+      // End native call UI on both platforms
+      if (Platform.OS === 'ios') {
+        console.log('Ending iOS CallKit call for missed call:', callId);
+        CallManager.endCall(callId);
+        if (incomingCall?.id) {
+          CallManager.endCall(incomingCall.id);
+        }
+      } else {
+        endNativeCall(callId);
+      }
       useCallStore.getState().setIncomingCall(null);
     }
   });
@@ -457,6 +468,7 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     console.log('=== CALL BUSY EVENT RECEIVED ===');
     console.log('Call ID:', callId);
     console.log('Caller was busy:', callerName);
+    console.log('Platform:', Platform.OS);
 
     // Add missed call message since user was busy
     useChatStore.getState().addMissedCallMessage(
@@ -466,22 +478,28 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
       callType
     );
 
-    // Clear any pending incoming call state - use case-insensitive comparison
+    // Clear any pending incoming call state
     const { incomingCall } = useCallStore.getState();
-    const callIdLower = callId?.toLowerCase();
-    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
-    if (incomingCallIdLower === callIdLower || incomingCall) {
+    if (guidsEqual(incomingCall?.id, callId) || incomingCall) {
       callSoundService.stopAllSounds();
       NativeCallSound.stopRingtone();
-      endNativeCall(callId);
+      // End native call UI on both platforms
+      if (Platform.OS === 'ios') {
+        console.log('Ending iOS CallKit call for busy call:', callId);
+        CallManager.endCall(callId);
+        if (incomingCall?.id) {
+          CallManager.endCall(incomingCall.id);
+        }
+      } else {
+        endNativeCall(callId);
+      }
       useCallStore.getState().setIncomingCall(null);
     }
   });
 
   callConnection.on('UserJoinedCall', (callId: string, participant: any) => {
     const { activeCall } = useCallStore.getState();
-    // Use case-insensitive comparison
-    if (activeCall && activeCall.id?.toLowerCase() === callId?.toLowerCase()) {
+    if (activeCall && guidsEqual(activeCall.id, callId)) {
       useCallStore.getState().setActiveCall({
         ...activeCall,
         participants: [...activeCall.participants, participant],
@@ -491,8 +509,7 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
 
   callConnection.on('UserLeftCall', (callId: string, userId: string) => {
     const { activeCall } = useCallStore.getState();
-    // Use case-insensitive comparison
-    if (activeCall && activeCall.id?.toLowerCase() === callId?.toLowerCase()) {
+    if (activeCall && guidsEqual(activeCall.id, callId)) {
       useCallStore.getState().setActiveCall({
         ...activeCall,
         participants: activeCall.participants.filter((p) => p.userId !== userId),
@@ -504,26 +521,35 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     console.log('=== CALL DECLINED EVENT RECEIVED ===');
     console.log('Call ID:', callId);
     console.log('Declined by user ID:', declinedByUserId);
+    console.log('Platform:', Platform.OS);
     const { activeCall, incomingCall } = useCallStore.getState();
     const currentUserId = useAuthStore.getState().userId;
+    console.log('Current user ID:', currentUserId);
+    console.log('Active call ID:', activeCall?.id);
+    console.log('Incoming call ID:', incomingCall?.id);
+    console.log('Active call guidsEqual:', guidsEqual(activeCall?.id, callId));
 
     // Stop all sounds (both JS and native)
     callSoundService.stopAllSounds();
     NativeCallSound.stopRingtone();
 
-    // Close native incoming call activity if it's showing
-    endNativeCall(callId);
+    // Close native call UI on both platforms
+    if (Platform.OS === 'ios') {
+      console.log('Ending iOS CallKit call for declined call:', callId);
+      CallManager.endCall(callId);
+      if (incomingCall?.id) {
+        CallManager.endCall(incomingCall.id);
+      }
+    } else {
+      endNativeCall(callId);
+    }
 
-    // Use case-insensitive comparison for GUIDs
-    const callIdLower = callId?.toLowerCase();
-    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
-    const activeCallIdLower = activeCall?.id?.toLowerCase();
-
-    if (incomingCallIdLower === callIdLower) {
+    if (guidsEqual(incomingCall?.id, callId)) {
+      console.log('Clearing incoming call');
       useCallStore.getState().setIncomingCall(null);
     }
 
-    if (activeCallIdLower === callIdLower) {
+    if (guidsEqual(activeCall?.id, callId)) {
       // For 1-on-1 calls, if the other person declined, end the call for the caller
       if (currentUserId && declinedByUserId !== currentUserId) {
         // The other person declined, so end the call for the caller
@@ -531,8 +557,11 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
         callSoundService.playBusyTone();
         useCallStore.getState().resetCallState();
       } else {
+        console.log('Current user declined, updating participant status');
         useCallStore.getState().updateCallParticipant(declinedByUserId, { status: 'Declined' });
       }
+    } else {
+      console.log('Call IDs do not match - activeCall:', activeCall?.id, 'received:', callId);
     }
   });
 
@@ -540,6 +569,7 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     console.log('=== CALL ENDED EVENT RECEIVED ===');
     console.log('Call ID:', callId);
     console.log('Ended by user ID:', userId);
+    console.log('Platform:', Platform.OS);
     const { activeCall, incomingCall } = useCallStore.getState();
     console.log('Current active call:', activeCall?.id);
     console.log('Current incoming call:', incomingCall?.id);
@@ -548,24 +578,30 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
     callSoundService.stopAllSounds();
     NativeCallSound.stopRingtone();
 
-    // Close native incoming call activity if it's showing
-    endNativeCall(callId);
+    // Close native call UI on both platforms
+    if (Platform.OS === 'ios') {
+      // End iOS CallKit call
+      console.log('Ending iOS CallKit call for:', callId);
+      CallManager.endCall(callId);
+      // Also try with incoming call ID if different
+      if (incomingCall?.id && !guidsEqual(incomingCall.id, callId)) {
+        console.log('Also ending with incoming call ID:', incomingCall.id);
+        CallManager.endCall(incomingCall.id);
+      }
+    } else {
+      // End Android native call activity
+      endNativeCall(callId);
+    }
 
-    // Use case-insensitive comparison for GUIDs
-    const callIdLower = callId?.toLowerCase();
-    const activeCallIdLower = activeCall?.id?.toLowerCase();
-    const incomingCallIdLower = incomingCall?.id?.toLowerCase();
-
-    if (activeCallIdLower === callIdLower || incomingCallIdLower === callIdLower) {
+    if (guidsEqual(activeCall?.id, callId) || guidsEqual(incomingCall?.id, callId)) {
       console.log('Resetting call state...');
       callSoundService.playEndedTone();
       useCallStore.getState().resetCallState();
       console.log('Call state reset complete');
     } else {
       console.log('Call IDs do not match, not resetting state');
-      console.log('Comparison:', { callIdLower, activeCallIdLower, incomingCallIdLower });
       // Even if IDs don't match, if we have an incoming call showing, reset state
-      // This handles cases where the call ID format might differ
+      // This handles edge cases where the call ID format might differ
       if (incomingCall) {
         console.log('Incoming call exists but ID mismatch - resetting anyway as safety measure');
         callSoundService.playEndedTone();
@@ -575,6 +611,7 @@ const initializeCallHub = async (accessToken: string): Promise<void> => {
   });
 
   callConnection.on('ParticipantStatusChanged', (callId: string, userId: string, status: any) => {
+    console.log('[SignalR] ParticipantStatusChanged:', { callId, userId, status });
     useCallStore.getState().updateCallParticipant(userId, status);
   });
 
@@ -865,12 +902,16 @@ export const joinCall = async (callId: string): Promise<any> => {
 };
 
 export const declineCall = async (callId: string): Promise<void> => {
-  console.log('declineCall called for:', callId);
+  console.log('=== DECLINE CALL FUNCTION ===');
+  console.log('Call ID to decline:', callId);
+  console.log('Call ID type:', typeof callId);
+  console.log('SignalR connection state:', callConnection?.state);
 
   // Try SignalR first for real-time notification
   let signalRSuccess = false;
   if (callConnection?.state === HubConnectionState.Connected) {
     try {
+      console.log('Invoking DeclineCall via SignalR...');
       await callConnection.invoke('DeclineCall', callId);
       signalRSuccess = true;
       console.log('DeclineCall via SignalR succeeded');
@@ -881,16 +922,16 @@ export const declineCall = async (callId: string): Promise<void> => {
     console.log('SignalR not connected, state:', callConnection?.state);
   }
 
-  // Always call HTTP API as well to ensure the decline is recorded
-  // and a push notification is sent to the caller
-  try {
-    const { callsApi } = await import('./api');
-    await callsApi.decline(callId);
-    console.log('DeclineCall via HTTP API succeeded');
-  } catch (error) {
-    console.error('HTTP API DeclineCall failed:', error);
-    // If both SignalR and HTTP failed, throw the error
-    if (!signalRSuccess) {
+  // Only call HTTP API if SignalR failed (to avoid duplicate decline attempts)
+  // When SignalR succeeds, the call is already declined on the server
+  if (!signalRSuccess) {
+    try {
+      console.log('SignalR failed, trying HTTP API...');
+      const { callsApi } = await import('./api');
+      await callsApi.decline(callId);
+      console.log('DeclineCall via HTTP API succeeded');
+    } catch (error) {
+      console.error('HTTP API DeclineCall failed:', error);
       throw error;
     }
   }

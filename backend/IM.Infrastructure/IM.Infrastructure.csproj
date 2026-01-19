@@ -17,6 +17,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.12.1" />
     <PackageReference Include="FirebaseAdmin" Version="2.4.0" />
+    <PackageReference Include="dotAPNS" Version="4.2.0" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="CsvHelper" Version="31.0.0" />
     <PackageReference Include="Livekit.Server.Sdk.Dotnet" Version="1.0.11" />

@@ -247,13 +247,21 @@ public class CallHub : Hub
     public async Task DeclineCall(Guid callId)
     {
         var userId = GetUserId();
+        _logger.LogInformation("DeclineCall called: callId={CallId}, userId={UserId}", callId, userId);
 
-        await _callService.DeclineCallAsync(callId, userId);
+        var declineResult = await _callService.DeclineCallAsync(callId, userId);
+        _logger.LogInformation("DeclineCallAsync result: {Result}", declineResult);
 
         var call = await _callService.GetCallByIdAsync(callId);
         if (call != null)
         {
+            _logger.LogInformation("Sending CallDeclined to group call_{CallId}", callId);
             await Clients.Group($"call_{callId}").SendAsync("CallDeclined", callId, userId);
+            _logger.LogInformation("CallDeclined sent successfully");
+        }
+        else
+        {
+            _logger.LogWarning("Call not found after decline: {CallId}", callId);
         }
     }
 
@@ -348,7 +356,7 @@ public class CallHub : Hub
     {
         var userId = GetUserId();
 
-        await _callService.UpdateParticipantStatusAsync(callId, userId, request.IsMuted, request.IsVideoEnabled);
+        await _callService.UpdateParticipantStatusAsync(callId, userId, request.IsMuted, request.IsVideoEnabled, request.IsOnHold);
 
         await Clients.OthersInGroup($"call_{callId}").SendAsync("ParticipantStatusChanged", callId, userId, request);
     }

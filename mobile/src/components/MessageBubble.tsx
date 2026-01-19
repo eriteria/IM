@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, ActivityIndicator } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { format } from 'date-fns';
@@ -831,4 +831,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default MessageBubble;
+export default memo(MessageBubble);
