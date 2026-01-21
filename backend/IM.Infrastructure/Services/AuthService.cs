@@ -20,6 +20,7 @@ public class AuthService : IAuthService
     private readonly ILogger<AuthService> _logger;
     private readonly IEmailService _emailService;
     private readonly ISmsService _smsService;
+    private readonly INotificationService _notificationService;
     private const int TOKEN_EXPIRY_MINUTES = 10;
     private const int MAX_ATTEMPTS = 5;
 
@@ -28,13 +29,15 @@ public class AuthService : IAuthService
         IConfiguration configuration,
         ILogger<AuthService> logger,
         IEmailService emailService,
-        ISmsService smsService)
+        ISmsService smsService,
+        INotificationService notificationService)
     {
         _context = context;
         _configuration = configuration;
         _logger = logger;
         _emailService = emailService;
         _smsService = smsService;
+        _notificationService = notificationService;
     }
 
     public async Task<(bool Success, string? FullName, string? MaskedEmail, string? MaskedPhone, string? Message)> RequestLoginTokenAsync(string serviceNumber)
@@ -125,7 +128,7 @@ public class AuthService : IAuthService
         return (true, nominalRoll.FullName, maskedEmail, maskedPhone, null);
     }
 
-    public async Task<(User? User, string? AccessToken, string? RefreshToken)> VerifyLoginTokenAsync(string serviceNumber, string token)
+    public async Task<(User? User, string? AccessToken, string? RefreshToken)> VerifyLoginTokenAsync(string serviceNumber, string token, string? deviceId = null)
     {
         var nominalRoll = await _context.NominalRolls
             .FirstOrDefaultAsync(n => n.ServiceNumber == serviceNumber && n.Status == UserStatus.Active);
@@ -173,7 +176,7 @@ public class AuthService : IAuthService
             user = new User
             {
                 NominalRollId = nominalRoll.Id,
-                PhoneNumber = nominalRoll.PhoneNumber ?? $"+234{new Random().NextInt64(7000000000, 9999999999)}",
+                PhoneNumber = nominalRoll.PhoneNumber ?? $"+234{GenerateSecurePhoneNumber()}",
                 DisplayName = nominalRoll.FullName,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString()), // Random password since we use token auth
             };
@@ -191,6 +194,10 @@ public class AuthService : IAuthService
         user.LastSeen = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
+
+        // Single device login enforcement: logout other devices
+        // This sends a force_logout notification to all other devices
+        await LogoutOtherDevicesAsync(user.Id, deviceId);
 
         return (user, accessToken, refreshToken);
     }
@@ -229,6 +236,40 @@ public class AuthService : IAuthService
         return true;
     }
 
+    public async Task LogoutOtherDevicesAsync(Guid userId, string? currentDeviceId)
+    {
+        // Get all active devices for this user except the current one
+        var otherDevices = await _context.UserDevices
+            .Where(d => d.UserId == userId && d.IsActive)
+            .ToListAsync();
+
+        // Filter out current device if deviceId is provided
+        if (!string.IsNullOrEmpty(currentDeviceId))
+        {
+            otherDevices = otherDevices.Where(d => d.DeviceId != currentDeviceId).ToList();
+        }
+
+        if (!otherDevices.Any())
+        {
+            _logger.LogInformation("No other devices to logout for user {UserId}", userId);
+            return;
+        }
+
+        _logger.LogInformation("Logging out {Count} other devices for user {UserId}", otherDevices.Count, userId);
+
+        // Send force logout notification to other devices before deactivating them
+        await _notificationService.SendForceLogoutNotificationAsync(userId, "You have been logged out because you logged in on another device.");
+
+        // Deactivate all other devices
+        foreach (var device in otherDevices)
+        {
+            device.IsActive = false;
+        }
+
+        await _context.SaveChangesAsync();
+        _logger.LogInformation("Other devices deactivated for user {UserId}", userId);
+    }
+
     public string GenerateAccessToken(User user)
     {
         var jwtSettings = _configuration.GetSection("JwtSettings");
@@ -264,13 +305,29 @@ public class AuthService : IAuthService
 
     private static string GenerateNumericToken(int length)
     {
-        var random = new Random();
-        var token = new StringBuilder();
+        var token = new StringBuilder(length);
+        var randomBytes = new byte[length];
+        using var rng = RandomNumberGenerator.Create();
+        rng.GetBytes(randomBytes);
+
         for (int i = 0; i < length; i++)
         {
-            token.Append(random.Next(0, 10));
+            // Map each byte to a digit 0-9
+            token.Append(randomBytes[i] % 10);
         }
         return token.ToString();
+    }
+
+    private static string GenerateSecurePhoneNumber()
+    {
+        // Generate a secure random phone number in range 7000000000-9999999999
+        using var rng = RandomNumberGenerator.Create();
+        var bytes = new byte[8];
+        rng.GetBytes(bytes);
+        var value = BitConverter.ToUInt64(bytes, 0);
+        // Map to range 7000000000-9999999999 (3 billion range)
+        var number = 7000000000 + (value % 3000000000);
+        return number.ToString();
     }
 
     private static string MaskPhoneNumber(string phone)

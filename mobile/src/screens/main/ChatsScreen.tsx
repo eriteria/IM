@@ -11,6 +11,7 @@ import {
   Modal,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -34,7 +35,8 @@ type ChatsScreenNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 const ChatsScreen: React.FC = () => {
   const navigation = useNavigation<ChatsScreenNavigationProp>();
   const { colors, isDark } = useTheme();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(colors, insets.bottom), [colors, insets.bottom]);
   const { userId } = useAuthStore();
   const { conversations, setConversations } = useChatStore();
   const [showMediaPicker, setShowMediaPicker] = useState(false);
@@ -604,7 +606,7 @@ const ChatsScreen: React.FC = () => {
 };
 
 // Dynamic styles based on theme
-const createStyles = (colors: any) => StyleSheet.create({
+const createStyles = (colors: any, bottomInset: number = 0) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.surface,
@@ -745,7 +747,7 @@ const createStyles = (colors: any) => StyleSheet.create({
   fab: {
     position: 'absolute',
     right: SPACING.lg,
-    bottom: 90,
+    bottom: 66 + Math.max(bottomInset * 0.7, 4), // tab bar height + 10px margin
     width: 56,
     height: 56,
     borderRadius: 28,

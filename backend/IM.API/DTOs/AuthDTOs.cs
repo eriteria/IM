@@ -25,6 +25,12 @@ public class VerifyTokenRequest
     [Required]
     [StringLength(6, MinimumLength = 6)]
     public string Token { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Device ID for single device login enforcement.
+    /// When provided, other devices for this user will be logged out.
+    /// </summary>
+    public string? DeviceId { get; set; }
 }
 
 public class LoginResponse

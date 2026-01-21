@@ -191,15 +191,14 @@ public class NotificationService : INotificationService
                 Priority = Priority.High,
                 // Short TTL for messages - they should be delivered promptly
                 TimeToLive = TimeSpan.FromHours(1),
-                // Android-specific notification settings
+                // Android-specific notification settings - use device defaults
                 Notification = new AndroidNotification
                 {
                     ChannelId = channelId,
                     Icon = "ic_notification",
                     Color = "#128C7E",
-                    Sound = "default",
-                    Priority = NotificationPriority.HIGH,
-                    Visibility = NotificationVisibility.PUBLIC,
+                    // Let the device channel settings control sound/vibration
+                    // This respects user's notification preferences
                     DefaultSound = true,
                     DefaultVibrateTimings = true,
                     DefaultLightSettings = true
@@ -924,6 +923,78 @@ public class NotificationService : INotificationService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send channel post notification to device");
+            }
+        }
+    }
+
+    public async Task SendForceLogoutNotificationAsync(Guid userId, string reason)
+    {
+        if (_firebaseMessaging == null)
+        {
+            _logger.LogWarning("Firebase messaging not initialized, cannot send force logout notification");
+            return;
+        }
+
+        var devices = await _context.UserDevices
+            .Where(d => d.UserId == userId && d.IsActive)
+            .ToListAsync();
+
+        if (!devices.Any())
+        {
+            _logger.LogWarning("No active devices found for force logout notification for user {UserId}", userId);
+            return;
+        }
+
+        _logger.LogInformation("Sending force logout notification to {DeviceCount} devices for user {UserId}", devices.Count, userId);
+
+        foreach (var device in devices)
+        {
+            try
+            {
+                // Data-only message for force logout
+                var firebaseMessage = new FirebaseMessage
+                {
+                    Token = device.DeviceToken,
+                    Data = new Dictionary<string, string>
+                    {
+                        { "type", "force_logout" },
+                        { "reason", reason }
+                    },
+                    Android = new AndroidConfig
+                    {
+                        Priority = Priority.High,
+                        TimeToLive = TimeSpan.FromMinutes(5)
+                    },
+                    Apns = new ApnsConfig
+                    {
+                        Headers = new Dictionary<string, string>
+                        {
+                            { "apns-priority", "10" },
+                            { "apns-push-type", "background" }
+                        },
+                        Aps = new Aps
+                        {
+                            ContentAvailable = true
+                        }
+                    }
+                };
+
+                var messageId = await _firebaseMessaging.SendAsync(firebaseMessage);
+                _logger.LogInformation("Force logout notification sent. MessageId: {MessageId}, UserId: {UserId}", messageId, userId);
+            }
+            catch (FirebaseMessagingException fex)
+            {
+                _logger.LogError(fex, "Firebase error sending force logout notification. Code: {Code}", fex.ErrorCode);
+
+                if (fex.ErrorCode == ErrorCode.NotFound || fex.ErrorCode == ErrorCode.InvalidArgument)
+                {
+                    device.IsActive = false;
+                    await _context.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send force logout notification to device");
             }
         }
     }

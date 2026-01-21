@@ -45,7 +45,11 @@ public class AuthController : ControllerBase
     [HttpPost("verify-token")]
     public async Task<ActionResult<LoginResponse>> VerifyToken([FromBody] VerifyTokenRequest request)
     {
-        var (user, accessToken, refreshToken) = await _authService.VerifyLoginTokenAsync(request.ServiceNumber, request.Token);
+        // Pass deviceId if provided for single device login enforcement
+        var (user, accessToken, refreshToken) = await _authService.VerifyLoginTokenAsync(
+            request.ServiceNumber,
+            request.Token,
+            request.DeviceId);
 
         if (user == null || accessToken == null || refreshToken == null)
         {

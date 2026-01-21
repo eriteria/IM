@@ -5,11 +5,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { check, request, PERMISSIONS, RESULTS, Permission } from 'react-native-permissions';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import RootNavigator, { RootStackParamList } from './src/navigation/RootNavigator';
 import IncomingCallListener from './src/components/IncomingCallListener';
 import IncomingCallDrawer from './src/components/IncomingCallDrawer';
 import GlobalPTTNotification from './src/components/GlobalPTTNotification';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import { useAuthStore } from './src/stores/authStore';
 import { useCallStore } from './src/stores/callStore';
 import { initializeSignalR, declineCall, joinCall } from './src/services/signalr';
@@ -23,6 +25,7 @@ import { CallManager } from './src/services/CallManager';
 import { initializeVoipPush, setVoipCallHandler, VoipCallData } from './src/services/VoipPushService';
 import { nativeCallEventService, NativeCallEventData } from './src/services/NativeCallEvent';
 import NativeBatteryOptimization from './src/services/NativeBatteryOptimization';
+import { canDrawOverlays, requestOverlayPermission } from './src/services/NativeOverlayPermission';
 import { ThemeProvider, useTheme, NotificationProvider } from './src/context';
 
 // Ignore specific warnings in development
@@ -103,6 +106,49 @@ const requestAllPermissions = async (): Promise<void> => {
 };
 
 /**
+ * Request overlay permission on Android 15+ (API 35+)
+ * Required to show incoming call screen when app is in background with screen on
+ * Without this, users must tap notification to answer calls on Android 15+
+ */
+const requestOverlayPermissionIfNeeded = async (): Promise<void> => {
+  if (Platform.OS !== 'android') return;
+
+  try {
+    // Only needed on Android 15+ (API 35+)
+    const sdkVersion = Platform.Version;
+    if (typeof sdkVersion === 'number' && sdkVersion < 35) {
+      console.log('Android < 15, overlay permission not required for calls');
+      return;
+    }
+
+    const hasPermission = await canDrawOverlays();
+    if (!hasPermission) {
+      console.log('Overlay permission not granted on Android 15+, prompting user');
+      Alert.alert(
+        'Display Over Other Apps',
+        'To show incoming call screens when your phone is in use, please allow this app to display over other apps. This ensures you never miss an important call.',
+        [
+          {
+            text: 'Not Now',
+            style: 'cancel',
+          },
+          {
+            text: 'Open Settings',
+            onPress: async () => {
+              await requestOverlayPermission();
+            },
+          },
+        ]
+      );
+    } else {
+      console.log('Overlay permission already granted');
+    }
+  } catch (error) {
+    console.error('Error checking overlay permission:', error);
+  }
+};
+
+/**
  * Request battery optimization exemption on Android
  * Critical for receiving calls when app is in background
  */
@@ -157,7 +203,7 @@ const requestBatteryOptimizationExemption = async (): Promise<void> => {
 
 // Inner app component that can use theme context
 const AppContent: React.FC = () => {
-  const { isAuthenticated, accessToken } = useAuthStore();
+  const { isAuthenticated, accessToken, logout } = useAuthStore();
   const { setIncomingCall, clearIncomingCall, incomingCall, showIncomingCallDrawer, setShowIncomingCallDrawer, activeCall } = useCallStore();
   const { colors, isDark } = useTheme();
   const navigationRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
@@ -206,6 +252,47 @@ const AppContent: React.FC = () => {
     return unsubscribe;
   }, []);
 
+  // Check for force logout flag (single device login enforcement)
+  useEffect(() => {
+    const checkForceLogout = async () => {
+      try {
+        const forceLogoutData = await AsyncStorage.getItem('force_logout');
+        if (forceLogoutData) {
+          const { reason, timestamp } = JSON.parse(forceLogoutData);
+          // Only process if it's recent (within last 5 minutes)
+          if (Date.now() - timestamp < 5 * 60 * 1000) {
+            console.log('Force logout detected:', reason);
+            // Clear the flag first
+            await AsyncStorage.removeItem('force_logout');
+            // Show alert and logout
+            Alert.alert(
+              'Session Ended',
+              reason || 'You have been logged out because you logged in on another device.',
+              [
+                {
+                  text: 'OK',
+                  onPress: async () => {
+                    await logout();
+                  },
+                },
+              ],
+              { cancelable: false }
+            );
+          } else {
+            // Old flag, just remove it
+            await AsyncStorage.removeItem('force_logout');
+          }
+        }
+      } catch (error) {
+        console.error('Error checking force logout:', error);
+      }
+    };
+
+    if (isAuthenticated) {
+      checkForceLogout();
+    }
+  }, [isAuthenticated, logout]);
+
   // Request all permissions on app launch (even before authentication)
   useEffect(() => {
     const initializePermissions = async () => {
@@ -218,6 +305,11 @@ const AppContent: React.FC = () => {
         setTimeout(() => {
           requestBatteryOptimizationExemption();
         }, 1500);
+
+        // Request overlay permission for Android 15+ (needed for incoming call screen)
+        setTimeout(() => {
+          requestOverlayPermissionIfNeeded();
+        }, 4000); // After battery optimization dialog
       }
     };
 
@@ -489,17 +581,19 @@ const AppContent: React.FC = () => {
 // Main App component with all providers
 const App: React.FC = () => {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryClientProvider client={queryClient}>
-        <SafeAreaProvider>
-          <ThemeProvider>
-            <NotificationProvider>
-              <AppContent />
-            </NotificationProvider>
-          </ThemeProvider>
-        </SafeAreaProvider>
-      </QueryClientProvider>
-    </GestureHandlerRootView>
+    <ErrorBoundary>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <QueryClientProvider client={queryClient}>
+          <SafeAreaProvider>
+            <ThemeProvider>
+              <NotificationProvider>
+                <AppContent />
+              </NotificationProvider>
+            </ThemeProvider>
+          </SafeAreaProvider>
+        </QueryClientProvider>
+      </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 };
 

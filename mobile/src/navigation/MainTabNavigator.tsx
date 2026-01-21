@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useQuery } from '@tanstack/react-query';
 import { useTheme } from '../context/ThemeContext';
@@ -55,6 +56,7 @@ const TabIcon: React.FC<TabIconProps> = ({ name, focused, color, size, badge, ba
 
 const MainTabNavigator: React.FC = () => {
   const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const conversations = useChatStore((state) => state.conversations);
   const { userId } = useAuthStore();
 
@@ -110,12 +112,19 @@ const MainTabNavigator: React.FC = () => {
       .reduce((total, channel) => total + (channel.unreadCount || 0), 0);
   }, [channels]);
 
+  // Calculate tab bar height with safe area insets for iOS Home Indicator
+  // Base height is 56px for the tab bar content
+  const tabBarBaseHeight = 56;
+  const bottomInset = insets.bottom;
+  // Use 70% of the safe area to position the bar slightly above the home indicator
+  const bottomPadding = Math.max(bottomInset * 0.7, 4);
+
   const tabBarStyle = useMemo(() => ({
     backgroundColor: colors.tabBar,
     borderTopWidth: 0,
-    height: 70,
-    paddingTop: SPACING.sm,
-    paddingBottom: SPACING.sm,
+    height: tabBarBaseHeight + bottomPadding,
+    paddingTop: SPACING.xs,
+    paddingBottom: bottomPadding,
     borderTopLeftRadius: BORDER_RADIUS.xl,
     borderTopRightRadius: BORDER_RADIUS.xl,
     position: 'absolute' as const,
@@ -125,7 +134,7 @@ const MainTabNavigator: React.FC = () => {
     shadowOpacity: 0.1,
     shadowRadius: 8,
     borderTopColor: colors.divider,
-  }), [colors]);
+  }), [colors, bottomPadding]);
 
   return (
     <Tab.Navigator

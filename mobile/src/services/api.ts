@@ -86,8 +86,8 @@ export const authApi = {
   requestLoginToken: (serviceNumber: string) =>
     api.post('/auth/request-token', { serviceNumber }),
 
-  verifyLoginToken: (serviceNumber: string, token: string) =>
-    api.post('/auth/verify-token', { serviceNumber, token }),
+  verifyLoginToken: (serviceNumber: string, token: string, deviceId?: string) =>
+    api.post('/auth/verify-token', { serviceNumber, token, deviceId }),
 
   logout: () => api.post('/auth/logout'),
 

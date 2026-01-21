@@ -9,6 +9,7 @@ import {
   StatusBar,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -44,7 +45,8 @@ interface Channel {
 const ChannelsScreen: React.FC = () => {
   const navigation = useNavigation<ChannelsScreenNavigationProp>();
   const { colors, isDark } = useTheme();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(colors, insets.bottom), [colors, insets.bottom]);
   const queryClient = useQueryClient();
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
@@ -360,7 +362,7 @@ const ChannelsScreen: React.FC = () => {
   );
 };
 
-const createStyles = (colors: ThemeColors) => StyleSheet.create({
+const createStyles = (colors: ThemeColors, bottomInset: number = 0) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.surface,
@@ -437,7 +439,7 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   fab: {
     position: 'absolute',
     right: SPACING.lg,
-    bottom: 90,
+    bottom: 66 + Math.max(bottomInset * 0.7, 4), // tab bar height + 10px margin
     width: 56,
     height: 56,
     borderRadius: 28,

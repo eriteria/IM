@@ -149,23 +149,43 @@ messaging().setBackgroundMessageHandler(async (remoteMessage) => {
     return;
   }
 
+  // Handle force logout notification (single device login enforcement)
+  if (data.type === 'force_logout') {
+    console.log('Force logout notification received:', data.reason);
+    // Store the force logout flag - the app will handle this when it opens
+    // We can't directly call the authStore from background handler
+    // The app will check for this flag on startup
+    try {
+      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+      await AsyncStorage.setItem('force_logout', JSON.stringify({
+        reason: data.reason || 'You have been logged out because you logged in on another device.',
+        timestamp: Date.now(),
+      }));
+      console.log('Force logout flag stored');
+    } catch (error) {
+      console.error('Failed to store force logout flag:', error);
+    }
+    return;
+  }
+
   // Handle message notifications - with wake-up capability
   if (data.type === 'message') {
     // Data-only message from updated backend
     const senderName = data.senderName || 'New Message';
     const messagePreview = data.messagePreview || 'You have a new message';
 
-    // Create urgent channel if needed
+    // Create message channel if needed - respects device DND settings
     await notifee.createChannel({
       id: 'messages_urgent',
-      name: 'Urgent Messages',
+      name: 'Messages',
       importance: AndroidImportance.HIGH,
       sound: 'default',
       vibration: true,
       vibrationPattern: [0, 250, 250, 250],
       lights: true,
       lightColor: '#128C7E',
-      bypassDnd: true,
+      // Don't bypass DND - respect user's device settings
+      bypassDnd: false,
       visibility: AndroidVisibility.PUBLIC,
     });
 
@@ -221,7 +241,8 @@ const displayCallNotificationFallback = async (data) => {
     vibrationPattern: [500, 250, 500, 250],
     lights: true,
     lightColor: '#128C7E',
-    bypassDnd: true,
+    // Don't bypass DND - respect user's device settings
+    bypassDnd: false,
   });
 
   await notifee.displayNotification({

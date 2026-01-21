@@ -30,6 +30,8 @@ class MainActivity : ReactActivity() {
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Switch from SplashTheme to AppTheme before calling super.onCreate
+    setTheme(R.style.AppTheme)
     super.onCreate(savedInstanceState)
     handleCallIntent(intent)
   }

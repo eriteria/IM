@@ -124,6 +124,17 @@ const initializeChatHub = async (accessToken: string): Promise<void> => {
 
       chatStore.addMessage(message.conversationId, message);
 
+      // Mark message as delivered when received (for messages from others)
+      // This updates the sender's UI to show double tick
+      if (message.senderId !== currentUserId) {
+        try {
+          await chatConnection.invoke('MarkMessageDelivered', message.id);
+          console.log('Message marked as delivered:', message.id);
+        } catch (error) {
+          console.error('Failed to mark message as delivered:', error);
+        }
+      }
+
       // Increment unread count if message is not from current user
       // and user is not viewing this conversation
       if (message.senderId !== currentUserId &&

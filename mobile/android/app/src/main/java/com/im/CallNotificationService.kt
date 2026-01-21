@@ -171,11 +171,15 @@ class CallNotificationService : FirebaseMessagingService() {
 
                         // Strategy for launching the incoming call screen when app is in background:
                         // - Screen OFF: Use full-screen intent on notification (works automatically)
+                        // - Screen ON + Overlay permission: Use overlay service (works on ALL versions including 16+)
                         // - Screen ON + Android 10-15: Use foreground service (has BAL exemption)
                         // - Screen ON + Android 9-: Launch activity directly
-                        // - Screen ON + Android 16+: Notification only (user taps to answer)
+                        // - Screen ON + Android 16+ without overlay: Notification only (user taps to answer)
                         //
                         // IMPORTANT: Only use ONE method at a time to avoid duplicate launches and flashing
+
+                        val canUseOverlay = IncomingCallOverlayService.canDrawOverlays(applicationContext)
+                        Log.d(TAG, "Can draw overlays: $canUseOverlay")
 
                         if (!isScreenOn) {
                             // Screen is off - use full-screen intent (it will launch automatically)
@@ -194,10 +198,23 @@ class CallNotificationService : FirebaseMessagingService() {
                                 conversationId,
                                 launchActivity = false  // Don't launch activity - full-screen intent will do it
                             )
-                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && Build.VERSION.SDK_INT < 36) {
-                            // Android 10-15 with screen ON: Use foreground service for BAL exemption
+                        } else if (Build.VERSION.SDK_INT >= 35 && canUseOverlay) {
+                            // Android 15+ with screen ON and overlay permission: Use overlay service
+                            // This bypasses all BAL restrictions via SYSTEM_ALERT_WINDOW
+                            Log.d(TAG, "Android 15+ with screen on - using overlay service (bypasses BAL)")
+                            showCallNotification(callId, callerName, callType, callerId, conversationId, false)
+                            IncomingCallOverlayService.showIncomingCall(
+                                applicationContext,
+                                callId,
+                                callerId,
+                                callerName,
+                                callType,
+                                conversationId
+                            )
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && Build.VERSION.SDK_INT < 35) {
+                            // Android 10-14 with screen ON: Use foreground service for BAL exemption
                             // Don't use full-screen intent to avoid duplicate launches
-                            Log.d(TAG, "Screen is on, Android 10-15 - using foreground service for BAL exemption")
+                            Log.d(TAG, "Screen is on, Android 10-14 - using foreground service for BAL exemption")
                             showCallNotification(callId, callerName, callType, callerId, conversationId, false)
                             CallForegroundService.startIncomingCall(
                                 applicationContext,
@@ -213,8 +230,8 @@ class CallNotificationService : FirebaseMessagingService() {
                             showCallNotification(callId, callerName, callType, callerId, conversationId, false)
                             launchIncomingCallActivity(callId, callerName, callType, callerId, conversationId)
                         } else {
-                            // Android 16+ with screen ON - can only use notification
-                            Log.w(TAG, "Android 16+ with screen on - notification only (user taps to answer)")
+                            // Android 15+ with screen ON but NO overlay permission - notification only
+                            Log.w(TAG, "Android 15+ with screen on, no overlay permission - notification only (user taps to answer)")
                             showCallNotification(callId, callerName, callType, callerId, conversationId, true)
                         }
                         Log.d(TAG, "========== END INCOMING CALL SETUP ==========")
@@ -344,11 +361,8 @@ class CallNotificationService : FirebaseMessagingService() {
                 ringtone?.isLooping = true
             }
 
-            // Set volume to max for calls
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING)
-            audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
-
+            // Use the device's current ringer volume instead of forcing max volume
+            // This respects the user's notification/ringer settings
             ringtone?.play()
             Log.d(TAG, "Ringtone started playing for call: $callId (type: $callType) from $callerName")
 
@@ -378,6 +392,17 @@ class CallNotificationService : FirebaseMessagingService() {
     @Suppress("DEPRECATION")
     private fun startVibration() {
         try {
+            // Check if the device should vibrate based on ringer mode
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val ringerMode = audioManager.ringerMode
+
+            // Only vibrate if the device is in vibrate mode or normal mode with vibration enabled
+            // Skip vibration if the device is in silent mode
+            if (ringerMode == AudioManager.RINGER_MODE_SILENT) {
+                Log.d(TAG, "Device is in silent mode, skipping vibration")
+                return
+            }
+
             vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
                 vibratorManager.defaultVibrator
@@ -394,7 +419,7 @@ class CallNotificationService : FirebaseMessagingService() {
                 vibrator?.vibrate(pattern, 0)
             }
 
-            Log.d(TAG, "Vibration started")
+            Log.d(TAG, "Vibration started (ringer mode: $ringerMode)")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting vibration: ${e.message}")
         }
@@ -469,7 +494,8 @@ class CallNotificationService : FirebaseMessagingService() {
                 NotificationManager.IMPORTANCE_HIGH
             )
             channel.description = "Incoming call notifications"
-            channel.setBypassDnd(true)
+            // Respect device Do Not Disturb settings - don't bypass DND
+            channel.setBypassDnd(false)
             channel.lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             channel.enableVibration(true)
             channel.vibrationPattern = longArrayOf(0, 500, 250, 500)

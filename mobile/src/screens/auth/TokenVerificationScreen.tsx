@@ -9,10 +9,12 @@ import {
   ActivityIndicator,
   StatusBar,
   Image,
+  Platform,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import DeviceInfo from 'react-native-device-info';
 import { RootStackParamList } from '../../navigation/RootNavigator';
 import { authApi } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
@@ -89,7 +91,9 @@ const TokenVerificationScreen: React.FC<TokenVerificationScreenProps> = ({ navig
 
     setIsLoading(true);
     try {
-      const response = await authApi.verifyLoginToken(serviceNumber, codeToVerify);
+      // Get unique device ID for single device login enforcement
+      const deviceId = await DeviceInfo.getUniqueId();
+      const response = await authApi.verifyLoginToken(serviceNumber, codeToVerify, deviceId);
       const data = response.data;
 
       await login(

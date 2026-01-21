@@ -101,6 +101,22 @@ target 'IM' do
       end
     end
 
+    # Fix duplicate RCTI18nStrings.bundle resources causing archive failure
+    # This is a known issue with React Native 0.73+ and Xcode 15+
+    # Solution: Remove the entire RCTI18nStrings target as it's not needed for most apps
+    installer.pods_project.targets.each do |target|
+      if target.name == 'React-Core-RCTI18nStrings'
+        target.remove_from_project
+      end
+    end
+
+    # Also remove the dependency from React-Core
+    installer.pods_project.targets.each do |target|
+      if target.name == 'React-Core'
+        target.dependencies.reject! { |dep| dep.target&.name == 'React-Core-RCTI18nStrings' }
+      end
+    end
+
     # Remove duplicate font files from Copy Pods Resources
     installer.aggregate_targets.each do |aggregate_target|
       aggregate_target.user_project.targets.each do |target|

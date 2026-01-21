@@ -19,6 +19,7 @@ import {
   StatusBar,
   InteractionManager,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import RNFS from 'react-native-fs';
 import FileViewer from 'react-native-file-viewer';
@@ -69,6 +70,7 @@ const ChatScreen: React.FC = () => {
   const navigation = useNavigation<ChatScreenNavigationProp>();
   const { conversationId, openSearch } = route.params;
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const { userId } = useAuthStore();
   const {
@@ -1093,11 +1095,13 @@ const ChatScreen: React.FC = () => {
   const keyExtractor = useCallback((item: Message) => item.id, []);
 
   // Memoize extraData to prevent unnecessary re-renders
+  // Include typing state to ensure FlatList re-renders ListHeaderComponent on Android
   const extraData = useMemo(() => ({
     selectedMessages,
     isSelectionMode,
     highlightedMessageId,
-  }), [selectedMessages, isSelectionMode, highlightedMessageId]);
+    typingUserIds: otherTypingUserIds,
+  }), [selectedMessages, isSelectionMode, highlightedMessageId, otherTypingUserIds]);
 
   // Memoize typing indicator component
   const typingIndicator = useMemo(() => {
@@ -1122,12 +1126,17 @@ const ChatScreen: React.FC = () => {
   const canCopy = selectedMessage?.type === 'Text' && !!selectedMessage?.content;
   const canEdit = selectedMessage?.senderId === userId && selectedMessage?.type === 'Text' && !selectedMessage?.isDeleted;
 
+  // Calculate keyboard offset for iOS - accounts for navigation header
+  // On iOS, the header height is typically 44pt + safe area top inset
+  const keyboardOffset = Platform.OS === 'ios' ? 44 + insets.top : 0;
+
   return (
     <GestureHandlerRootView style={styles.flex}>
       <KeyboardAvoidingView
         style={[styles.container, { backgroundColor: colors.background }]}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={90}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={keyboardOffset}
+        enabled
       >
         {/* Offline Banner */}
         {isOffline && (
@@ -1478,7 +1487,7 @@ const styles = StyleSheet.create({
   headerName: {
     fontSize: FONTS.sizes.lg,
     fontWeight: 'bold',
-    maxWidth: 150,
+    maxWidth: 200,
   },
   headerStatus: {
     fontSize: FONTS.sizes.xs,

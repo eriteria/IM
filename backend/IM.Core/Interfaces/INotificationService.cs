@@ -14,4 +14,5 @@ public interface INotificationService
     Task SendBroadcastNotificationAsync(string title, string body);
     Task SendPTTNotificationAsync(Guid conversationId, Guid senderId, string senderName, IEnumerable<Guid> recipientIds);
     Task SendChannelPostNotificationAsync(Guid channelId, string channelName, Guid postId, string authorName, string? postPreview, IEnumerable<Guid> followerIds);
+    Task SendForceLogoutNotificationAsync(Guid userId, string reason);
 }

@@ -13,6 +13,7 @@ import {
   Animated,
   Linking,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import RNFS from 'react-native-fs';
@@ -61,6 +62,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onCancelEdit,
 }) => {
   const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -334,7 +336,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
           style={styles.emojiPickerBackdrop}
           onPress={() => setShowEmojiPicker(false)}
         />
-        <View style={[styles.emojiPickerContainer, { backgroundColor: colors.surface }]}>
+        <View style={[styles.emojiPickerContainer, { backgroundColor: colors.surface, paddingBottom: Platform.OS === 'ios' ? insets.bottom : SPACING.lg }]}>
           <View style={[styles.emojiPickerHeader, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.emojiPickerTitle, { color: colors.text }]}>Emoji</Text>
             <TouchableOpacity onPress={() => setShowEmojiPicker(false)}>
@@ -390,7 +392,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   // Recording UI
   if (isRecording) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.surface, borderTopColor: colors.divider }]}>
+      <View style={[styles.container, { backgroundColor: colors.surface, borderTopColor: colors.divider, paddingBottom: Platform.OS === 'ios' ? insets.bottom : 0 }]}>
         <View style={[styles.recordingContainer, { backgroundColor: colors.surface }]}>
           <TouchableOpacity style={styles.cancelRecordingButton} onPress={cancelRecording}>
             <Icon name="delete" size={24} color={colors.error} />
@@ -418,7 +420,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.surface, borderTopColor: colors.divider }]}>
+    <View style={[styles.container, { backgroundColor: colors.surface, borderTopColor: colors.divider, paddingBottom: Platform.OS === 'ios' ? insets.bottom : 0 }]}>
       {/* Edit mode indicator */}
       {editingMessage && (
         <View style={[styles.replyContainer, { backgroundColor: colors.inputBackground, borderBottomColor: colors.divider }]}>
@@ -650,7 +652,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: BORDER_RADIUS.xl,
     borderTopRightRadius: BORDER_RADIUS.xl,
     maxHeight: '50%',
-    paddingBottom: Platform.OS === 'ios' ? 34 : SPACING.lg,
   },
   emojiPickerHeader: {
     flexDirection: 'row',

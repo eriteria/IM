@@ -25,23 +25,9 @@
   // They will be passed down to the ViewController used by React Native.
   self.initialProps = @{};
 
-  // Configure audio session for WebRTC/LiveKit
-  AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-  NSError *error = nil;
-
-  [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
-                       mode:AVAudioSessionModeVideoChat
-                    options:AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionDefaultToSpeaker
-                      error:&error];
-
-  if (error) {
-    NSLog(@"Failed to set audio session category: %@", error);
-  }
-
-  [audioSession setActive:YES error:&error];
-  if (error) {
-    NSLog(@"Failed to activate audio session: %@", error);
-  }
+  // NOTE: Audio session configuration is deferred until a call is started.
+  // This ensures we don't override the device's notification/ringer settings.
+  // The audio session will be configured by LiveKit/WebRTC when a call begins.
 
   // Register for VoIP push notifications
   [RNVoipPushNotificationManager voipRegistration];
@@ -103,7 +89,12 @@
   NSLog(@"Notification received in foreground: %@", userInfo);
 
   // Show the notification even when app is in foreground
-  completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+  // Use newer API for iOS 14+
+  if (@available(iOS 14.0, *)) {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge | UNNotificationPresentationOptionList);
+  } else {
+    completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+  }
 }
 
 // Called when user taps on a notification
@@ -113,6 +104,23 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
   NSDictionary *userInfo = response.notification.request.content.userInfo;
   NSLog(@"User tapped notification: %@", userInfo);
   completionHandler();
+}
+
+// Called when a remote notification arrives (background fetch / silent push)
+- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler {
+  NSLog(@"Remote notification received (background): %@", userInfo);
+
+  // Let Firebase handle the notification
+  [[FIRMessaging messaging] appDidReceiveMessage:userInfo];
+
+  // Check if this is a call notification
+  NSString *type = userInfo[@"type"];
+  if ([type isEqualToString:@"call"]) {
+    NSLog(@"Call notification received in background");
+    // VoIP pushes should handle this via PushKit, but this is a fallback
+  }
+
+  completionHandler(UIBackgroundFetchResultNewData);
 }
 
 #pragma mark - PushKit VoIP Delegates
