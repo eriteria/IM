@@ -23,6 +23,14 @@ public class NotificationService : INotificationService
     private readonly string? _apnsBundleId;
     private readonly bool _apnsUseSandbox;
 
+    // Service status tracking
+    private readonly NotificationServiceStatus _serviceStatus = new()
+    {
+        IsFirebaseEnabled = false,
+        IsApnsEnabled = false,
+        LastChecked = DateTime.UtcNow
+    };
+
     public NotificationService(ApplicationDbContext context, IConfiguration configuration, ILogger<NotificationService> logger)
     {
         _context = context;
@@ -37,7 +45,9 @@ public class NotificationService : INotificationService
 
             if (string.IsNullOrEmpty(firebaseCredentialsPath))
             {
-                _logger.LogWarning("Firebase credentials path is not configured. Push notifications will be disabled.");
+                var error = "Firebase credentials path is not configured. Push notifications will be disabled.";
+                _logger.LogWarning(error);
+                _serviceStatus.FirebaseError = error;
             }
             else
             {
@@ -50,7 +60,9 @@ public class NotificationService : INotificationService
 
                 if (!File.Exists(fullPath))
                 {
-                    _logger.LogWarning("Firebase credentials file not found at: {Path}. Push notifications will be disabled.", fullPath);
+                    var error = $"Firebase credentials file not found at: {fullPath}. Push notifications will be disabled.";
+                    _logger.LogWarning(error);
+                    _serviceStatus.FirebaseError = error;
                 }
                 else if (FirebaseApp.DefaultInstance == null)
                 {
@@ -60,17 +72,22 @@ public class NotificationService : INotificationService
                         Credential = GoogleCredential.FromFile(fullPath)
                     });
                     _firebaseMessaging = FirebaseMessaging.DefaultInstance;
+                    _serviceStatus.IsFirebaseEnabled = true;
+                    _serviceStatus.FirebaseError = null;
                     _logger.LogInformation("Firebase initialized successfully. Push notifications are enabled.");
                 }
                 else
                 {
                     _firebaseMessaging = FirebaseMessaging.DefaultInstance;
+                    _serviceStatus.IsFirebaseEnabled = true;
+                    _serviceStatus.FirebaseError = null;
                 }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to initialize Firebase. Push notifications will be disabled.");
+            _serviceStatus.FirebaseError = ex.Message;
         }
 
         // Initialize APNs client for iOS VoIP pushes
@@ -84,10 +101,12 @@ public class NotificationService : INotificationService
 
             if (string.IsNullOrEmpty(keyId) || string.IsNullOrEmpty(teamId) || string.IsNullOrEmpty(bundleId) || string.IsNullOrEmpty(p8KeyPath))
             {
+                var error = $"APNs configuration is incomplete. KeyId: {(string.IsNullOrEmpty(keyId) ? "MISSING" : "OK")}, TeamId: {(string.IsNullOrEmpty(teamId) ? "MISSING" : "OK")}, BundleId: {(string.IsNullOrEmpty(bundleId) ? "MISSING" : "OK")}";
                 _logger.LogWarning("APNs configuration is incomplete. iOS VoIP push notifications will be disabled. KeyId: {KeyId}, TeamId: {TeamId}, BundleId: {BundleId}",
                     string.IsNullOrEmpty(keyId) ? "MISSING" : "OK",
                     string.IsNullOrEmpty(teamId) ? "MISSING" : "OK",
                     string.IsNullOrEmpty(bundleId) ? "MISSING" : "OK");
+                _serviceStatus.ApnsError = error;
             }
             else
             {
@@ -97,7 +116,9 @@ public class NotificationService : INotificationService
 
                 if (!File.Exists(fullP8Path))
                 {
-                    _logger.LogWarning("APNs P8 key file not found at: {Path}. iOS VoIP push notifications will be disabled.", fullP8Path);
+                    var error = $"APNs P8 key file not found at: {fullP8Path}. iOS VoIP push notifications will be disabled.";
+                    _logger.LogWarning(error);
+                    _serviceStatus.ApnsError = error;
                 }
                 else
                 {
@@ -114,6 +135,8 @@ public class NotificationService : INotificationService
                     _apnsClient = ApnsClient.CreateUsingJwt(httpClient, options);
                     _apnsBundleId = bundleId;
                     _apnsUseSandbox = useSandbox;
+                    _serviceStatus.IsApnsEnabled = true;
+                    _serviceStatus.ApnsError = null;
                     _logger.LogInformation("APNs client initialized successfully for bundle {BundleId} (Sandbox: {UseSandbox}). iOS VoIP push notifications are enabled.",
                         bundleId, useSandbox);
                 }
@@ -122,7 +145,16 @@ public class NotificationService : INotificationService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to initialize APNs client. iOS VoIP push notifications will be disabled.");
+            _serviceStatus.ApnsError = ex.Message;
         }
+
+        _serviceStatus.LastChecked = DateTime.UtcNow;
+    }
+
+    public NotificationServiceStatus GetServiceStatus()
+    {
+        _serviceStatus.LastChecked = DateTime.UtcNow;
+        return _serviceStatus;
     }
 
     public async Task SendMessageNotificationAsync(IM.Core.Entities.Message message, IEnumerable<Guid> recipientIds)
@@ -284,20 +316,29 @@ public class NotificationService : INotificationService
                             { "uuid", Guid.NewGuid().ToString() }
                         };
 
+                        // VoIP push requires specific topic format: bundleId.voip
+                        var voipTopic = $"{_apnsBundleId}.voip";
+
                         var push = new ApplePush(ApplePushType.Voip)
                             .AddToken(device.DeviceToken)
+                            .SetTopic(voipTopic)
                             .AddCustomProperty("callId", call.Id.ToString())
                             .AddCustomProperty("callerId", call.InitiatorId.ToString())
                             .AddCustomProperty("callerName", callerName)
                             .AddCustomProperty("callType", call.Type.ToString())
                             .AddCustomProperty("conversationId", call.ConversationId.ToString())
-                            .SetPriority(10);
+                            .AddCustomProperty("uuid", Guid.NewGuid().ToString())
+                            .SetPriority(10)
+                            .SetExpiration(DateTimeOffset.UtcNow.AddSeconds(30)); // Short expiration for calls
 
                         // Use sandbox for development builds
                         if (_apnsUseSandbox)
                         {
                             push = push.SendToDevelopmentServer();
                         }
+
+                        _logger.LogInformation("Sending VoIP push to topic: {Topic}, Device: {DeviceToken}",
+                            voipTopic, device.DeviceToken[..Math.Min(20, device.DeviceToken.Length)] + "...");
 
                         var response = await _apnsClient.SendAsync(push);
 
@@ -382,9 +423,13 @@ public class NotificationService : INotificationService
             }
         }
 
-        // Also send FCM to iOS devices that don't have VoIP tokens (fallback for when app is in foreground)
+        // Also send FCM to iOS devices that don't have VoIP tokens
+        // This serves as a fallback - shows a visible notification with call info
+        // Note: This won't trigger CallKit like VoIP pushes do, but at least notifies the user
         if (iosFcmDevices.Any() && _firebaseMessaging != null)
         {
+            _logger.LogInformation("Sending FCM fallback to {Count} iOS devices without VoIP tokens", iosFcmDevices.Count);
+
             foreach (var device in iosFcmDevices)
             {
                 try
@@ -392,6 +437,12 @@ public class NotificationService : INotificationService
                     var firebaseMessage = new FirebaseMessage
                     {
                         Token = device.DeviceToken,
+                        // Include notification payload so iOS shows visible notification
+                        Notification = new Notification
+                        {
+                            Title = $"Incoming {callTypeText} call",
+                            Body = $"{callerName} is calling"
+                        },
                         Data = new Dictionary<string, string>
                         {
                             { "type", "call" },
@@ -406,11 +457,19 @@ public class NotificationService : INotificationService
                             Headers = new Dictionary<string, string>
                             {
                                 { "apns-priority", "10" },
-                                { "apns-push-type", "background" }
+                                { "apns-push-type", "alert" }  // Alert type for visible notification
                             },
                             Aps = new Aps
                             {
-                                ContentAvailable = true
+                                Alert = new ApsAlert
+                                {
+                                    Title = $"Incoming {callTypeText} call",
+                                    Body = $"{callerName} is calling"
+                                },
+                                Sound = "ringtone.caf",  // Use the ringtone sound
+                                ContentAvailable = true,
+                                MutableContent = true,
+                                Category = "CALL_CATEGORY"  // Can be used for notification actions
                             }
                         }
                     };

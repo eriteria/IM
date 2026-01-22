@@ -287,11 +287,107 @@ const StorageManagementScreen: React.FC = () => {
                 }
               }
 
+              // Also clear media files in root documents directory
+              await clearMediaFilesByExtension(docDir);
+
               await calculateStorageUsage();
               Alert.alert('Success', 'All media cleared successfully');
             } catch (error) {
               console.error('Error clearing media:', error);
               Alert.alert('Error', 'Failed to clear media');
+            } finally {
+              setIsClearing(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const clearMediaFilesByExtension = async (dir: string) => {
+    try {
+      const files = await RNFS.readDir(dir);
+      const mediaExtensions = [
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic',
+        'mp4', 'mov', 'avi', 'mkv', 'webm',
+        'mp3', 'wav', 'aac', 'm4a', 'ogg',
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt'
+      ];
+
+      for (const file of files) {
+        if (file.isFile()) {
+          const ext = file.name.split('.').pop()?.toLowerCase() || '';
+          if (mediaExtensions.includes(ext)) {
+            try {
+              await RNFS.unlink(file.path);
+            } catch (e) {
+              // File might be in use
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Directory error
+    }
+  };
+
+  const clearMediaByType = async (type: 'images' | 'videos' | 'audio' | 'documents') => {
+    const typeLabels = {
+      images: 'Images',
+      videos: 'Videos',
+      audio: 'Audio',
+      documents: 'Documents',
+    };
+    const typeExtensions: Record<string, string[]> = {
+      images: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'],
+      videos: ['mp4', 'mov', 'avi', 'mkv', 'webm'],
+      audio: ['mp3', 'wav', 'aac', 'm4a', 'ogg'],
+      documents: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt'],
+    };
+
+    Alert.alert(
+      `Clear ${typeLabels[type]}`,
+      `This will delete all downloaded ${typeLabels[type].toLowerCase()}. This action cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setIsClearing(type);
+            try {
+              const docDir = RNFS.DocumentDirectoryPath;
+
+              // Clear media directory
+              const mediaPath = `${docDir}/${type}`;
+              try {
+                await RNFS.unlink(mediaPath);
+              } catch (e) {
+                // Directory might not exist
+              }
+
+              // Also clear files by extension in root directory
+              const files = await RNFS.readDir(docDir);
+              const extensions = typeExtensions[type];
+
+              for (const file of files) {
+                if (file.isFile()) {
+                  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+                  if (extensions.includes(ext)) {
+                    try {
+                      await RNFS.unlink(file.path);
+                    } catch (e) {
+                      // File might be in use
+                    }
+                  }
+                }
+              }
+
+              await calculateStorageUsage();
+              Alert.alert('Success', `${typeLabels[type]} cleared successfully`);
+            } catch (error) {
+              console.error(`Error clearing ${type}:`, error);
+              Alert.alert('Error', `Failed to clear ${typeLabels[type].toLowerCase()}`);
             } finally {
               setIsClearing(null);
             }
@@ -375,9 +471,14 @@ const StorageManagementScreen: React.FC = () => {
     icon: string,
     title: string,
     size: number,
-    color: string
+    color: string,
+    type?: 'images' | 'videos' | 'audio' | 'documents'
   ) => (
-    <View style={styles.storageItem}>
+    <TouchableOpacity
+      style={styles.storageItem}
+      onPress={() => type && size > 0 && clearMediaByType(type)}
+      disabled={!type || size === 0 || isClearing !== null}
+    >
       <View style={[styles.storageItemIcon, { backgroundColor: color + '20' }]}>
         <Icon name={icon} size={24} color={color} />
       </View>
@@ -385,7 +486,16 @@ const StorageManagementScreen: React.FC = () => {
         <Text style={styles.storageItemTitle}>{title}</Text>
         <Text style={styles.storageItemSize}>{formatSize(size)}</Text>
       </View>
-    </View>
+      {type && size > 0 && (
+        <View style={styles.storageItemAction}>
+          {isClearing === type ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <Icon name="trash-can-outline" size={20} color={colors.textSecondary} />
+          )}
+        </View>
+      )}
+    </TouchableOpacity>
   );
 
   const renderActionButton = (
@@ -450,14 +560,15 @@ const StorageManagementScreen: React.FC = () => {
 
         {/* Storage Breakdown */}
         <Text style={styles.sectionTitle}>STORAGE BREAKDOWN</Text>
+        <Text style={styles.sectionHint}>Tap to clear individual categories</Text>
         <View style={styles.section}>
-          {renderStorageItem('image', 'Images', storageInfo.images, '#4CAF50')}
+          {renderStorageItem('image', 'Images', storageInfo.images, '#4CAF50', 'images')}
           <View style={styles.itemDivider} />
-          {renderStorageItem('video', 'Videos', storageInfo.videos, '#2196F3')}
+          {renderStorageItem('video', 'Videos', storageInfo.videos, '#2196F3', 'videos')}
           <View style={styles.itemDivider} />
-          {renderStorageItem('music', 'Audio', storageInfo.audio, '#FF9800')}
+          {renderStorageItem('music', 'Audio', storageInfo.audio, '#FF9800', 'audio')}
           <View style={styles.itemDivider} />
-          {renderStorageItem('file-document', 'Documents', storageInfo.documents, '#9C27B0')}
+          {renderStorageItem('file-document', 'Documents', storageInfo.documents, '#9C27B0', 'documents')}
           <View style={styles.itemDivider} />
           {renderStorageItem('cached', 'Cache', storageInfo.cache, '#607D8B')}
         </View>
@@ -671,6 +782,13 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     marginBottom: SPACING.sm,
     color: colors.textSecondary,
   },
+  sectionHint: {
+    fontSize: FONTS.sizes.xs,
+    marginHorizontal: SPACING.lg,
+    marginBottom: SPACING.sm,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
   totalStorage: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -747,6 +865,10 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: FONTS.sizes.sm,
     marginTop: 2,
     color: colors.textSecondary,
+  },
+  storageItemAction: {
+    marginLeft: 'auto',
+    padding: SPACING.xs,
   },
   itemDivider: {
     height: 1,

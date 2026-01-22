@@ -328,6 +328,14 @@ export const notificationsApi = {
   // Register VoIP push token (iOS only) - for incoming calls that wake the device
   registerVoip: (token: string, platform: string, deviceId?: string) =>
     api.post('/notifications/register-voip', { token, platform, deviceId }),
+
+  // Get notification service status (Firebase and APNs availability)
+  getStatus: () =>
+    api.get<{
+      firebase: { enabled: boolean; error: string | null };
+      apns: { enabled: boolean; error: string | null };
+      lastChecked: string;
+    }>('/notifications/status'),
 };
 
 // Channels API

@@ -42,6 +42,29 @@ public class NotificationsController : ControllerBase
         await _notificationService.RegisterVoipTokenAsync(userId, request.Token, request.Platform, request.DeviceId);
         return Ok(new { message = "VoIP device registered for call notifications" });
     }
+
+    /// <summary>
+    /// Get the status of notification services (Firebase and APNs)
+    /// </summary>
+    [HttpGet("status")]
+    public ActionResult GetNotificationStatus()
+    {
+        var status = _notificationService.GetServiceStatus();
+        return Ok(new
+        {
+            firebase = new
+            {
+                enabled = status.IsFirebaseEnabled,
+                error = status.FirebaseError
+            },
+            apns = new
+            {
+                enabled = status.IsApnsEnabled,
+                error = status.ApnsError
+            },
+            lastChecked = status.LastChecked
+        });
+    }
 }
 
 public class RegisterDeviceRequest

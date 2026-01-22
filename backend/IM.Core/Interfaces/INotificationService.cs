@@ -2,6 +2,15 @@ using IM.Core.Entities;
 
 namespace IM.Core.Interfaces;
 
+public class NotificationServiceStatus
+{
+    public bool IsFirebaseEnabled { get; set; }
+    public bool IsApnsEnabled { get; set; }
+    public string? FirebaseError { get; set; }
+    public string? ApnsError { get; set; }
+    public DateTime LastChecked { get; set; }
+}
+
 public interface INotificationService
 {
     Task SendMessageNotificationAsync(Message message, IEnumerable<Guid> recipientIds);
@@ -15,4 +24,9 @@ public interface INotificationService
     Task SendPTTNotificationAsync(Guid conversationId, Guid senderId, string senderName, IEnumerable<Guid> recipientIds);
     Task SendChannelPostNotificationAsync(Guid channelId, string channelName, Guid postId, string authorName, string? postPreview, IEnumerable<Guid> followerIds);
     Task SendForceLogoutNotificationAsync(Guid userId, string reason);
+
+    /// <summary>
+    /// Get the current status of notification services (Firebase and APNs)
+    /// </summary>
+    NotificationServiceStatus GetServiceStatus();
 }
