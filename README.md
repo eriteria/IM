@@ -148,7 +148,15 @@ LIVEKIT_URL=ws://localhost:7880
 3. Place files in the respective platform directories
 4. Download service account key as `firebase-credentials.json` in backend folder
 
-## API Documentation
+## Documentation
+
+### Audio Routing
+
+For a detailed breakdown of how audio routing is managed in the mobile app:
+- **[Audio Routing Breakdown](./AUDIO_ROUTING_BREAKDOWN.md)** - Complete technical documentation
+- **[Audio Routing Summary](./AUDIO_ROUTING_SUMMARY.md)** - Quick reference guide
+
+### API Documentation
 
 When running locally, Swagger UI is available at:
 - http://localhost:5000/swagger
